@@ -1,0 +1,11 @@
+# https://github.com/crate-ci/typos
+[files]
+extend-exclude = ["tags"]
+
+[default.extend-words]
+# Vim modeline option: 'noexpandtab'
+noet = "noet"
+# Vim command: :enew
+enew = "enew"
+# British/US-neutral spelling used in prose and test names
+unparseable = "unparseable"
