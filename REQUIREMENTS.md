@@ -19,7 +19,7 @@
 
 ## 1. Purpose
 
-A plugin that treats an LLM as a *reviser*: given a prompt and a region of text,
+A plugin that treats an LLM as a _reviser_: given a prompt and a region of text,
 it produces a proposed new version and presents it in Vim's native diff mode so
 the user accepts or rejects changes with `]c`, `[c`, `do`, `dp`.
 
@@ -275,8 +275,8 @@ constraint discovered while satisfying, the requirements above.
   `g:Air_backend` and `g:Air_output_filter`. `air#hook()` also accepts the
   lowercase `g:air_*` form when the value is a function-name string, so the
   documented prefix still works for anyone who prefers it.
-- **R7.9 (converse) — verified against the CLI surface.** `aws bedrock-runtime
-  converse` exists with `--model-id`, `--messages`, `--system` and
+- **R7.9 (converse) — verified against the CLI surface.** `aws bedrock-runtime converse`
+  exists with `--model-id`, `--messages`, `--system` and
   `--inference-config` in AWS CLI v2. It has not been run against a live
   Bedrock account from this environment; tests use a stub `aws` executable.
 - **E746 constraint on backends.** Vim refuses to define an autoload-named

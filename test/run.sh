@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run the vim-air test suite. No network and no AWS calls.
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 AIR_TEST_LOG=$(mktemp)
 export AIR_TEST_LOG
 vim -es -N -u test/vimrc -c 'source test/run.vim' </dev/null

@@ -1,6 +1,8 @@
 " vim-air test suite (R10.2). Run: make test  /  test/run.sh
 " No network and no AWS calls: a fake backend, a stub `aws`, and g:Air_backend.
 
+scriptencoding utf-8
+
 let v:errors = []
 let s:fails = 0
 
@@ -91,7 +93,7 @@ call s:eq(air#text#clean("```\nrevised\n```", ['orig'], 'unix'), ['revised'],
       \ 'clean strips fences')
 call s:eq(air#text#clean("a\r\nb", ['x'], 'unix'), ['a', 'b'],
       \ 'clean normalizes CRLF')
-call s:eq(air#text#clean("new", ['', 'orig', ''], 'unix'), ['', 'new', ''],
+call s:eq(air#text#clean('new', ['', 'orig', ''], 'unix'), ['', 'new', ''],
       \ 'clean restores blank edges of the original region (R8.2)')
 call s:eq(air#text#clean("   \n  ", ['x'], 'unix'), [],
       \ 'clean returns empty for whitespace-only response')
@@ -112,9 +114,9 @@ call s:eq(air#text#clean("\xef\xbb\xbf```\nALPHA\n```", ['a'], 'unix'),
       \ ['ALPHA'], 'a BOM does not defeat fence stripping')
 call s:eq(air#text#clean("mid\xef\xbb\xbfword", ['a'], 'unix'), ['midword'],
       \ 'a BOM is removed anywhere, not just at the start')
-call s:eq(air#text#clean(" ALPHA", ['alpha'], 'unix'), ['ALPHA'],
+call s:eq(air#text#clean(' ALPHA', ['alpha'], 'unix'), ['ALPHA'],
       \ 'clean strips invented indentation on the first line')
-call s:eq(air#text#clean("    return x", ['    return y'], 'unix'),
+call s:eq(air#text#clean('    return x', ['    return y'], 'unix'),
       \ ['    return x'],
       \ 'real indentation is preserved when the original was indented')
 call s:eq(air#text#clean("\u200bALPHA", ['', 'alpha'], 'unix'), ['', 'ALPHA'],

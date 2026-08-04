@@ -1,5 +1,7 @@
 " vim-air — response text normalization (§8)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

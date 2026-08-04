@@ -1,5 +1,7 @@
 " vim-air — request/response log (R7.9, :AirLog)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

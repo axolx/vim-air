@@ -26,6 +26,8 @@
 " Select one with g:air_backend_name. Everything below is provider-agnostic:
 " argv execution, async/sync, timeouts, aborting, temp-file cleanup, logging.
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

@@ -3,6 +3,8 @@
 " Maintainer: you
 " License: MIT
 
+scriptencoding utf-8
+
 if exists('g:loaded_air')
   finish
 endif

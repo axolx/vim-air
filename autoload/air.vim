@@ -1,5 +1,7 @@
 " vim-air — main orchestration (autoload namespace air#, R0.4)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 
@@ -192,9 +194,9 @@ function! air#send(request) abort
 
   call air#prompt#remember(req.prompt)
   let payload = air#prompt#compose(req)
-  call air#log#add("--- request (backend=" . air#backend#name()
+  call air#log#add('--- request (backend=' . air#backend#name()
         \ . ' scope=' . req.scope
-        \ . " lines " . req.start . '-' . req.end . ") ---\n"
+        \ . ' lines ' . req.start . '-' . req.end . ") ---\n"
         \ . payload.system . "\n\n" . payload.user)
 
   let s:request = req
@@ -206,7 +208,7 @@ function! air#send(request) abort
 endfunction
 
 function! s:on_response(req, result) abort
-  call air#log#add("--- response (ok=" . a:result.ok . ") ---\n"
+  call air#log#add('--- response (ok=' . a:result.ok . ") ---\n"
         \ . get(a:result, 'raw', ''))
 
   if !a:result.ok

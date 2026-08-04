@@ -1,5 +1,7 @@
 " vim-air — prompts: named presets, composition, prompt buffer, history (§6, §8a)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

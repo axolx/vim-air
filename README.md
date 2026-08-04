@@ -77,13 +77,13 @@ cancels a request in flight; `:AirLog` shows what was sent and returned.
 
 ### Scopes
 
-| Scope | What it sends |
-|---|---|
-| `buffer` | the whole buffer (default) |
-| `range` | the `[range]` or visual selection |
-| `paragraph` | the non-blank block around the cursor |
-| `section` | a Markdown heading through the next same-or-higher heading |
-| `motion` | whatever an operator covers, via `<Plug>AirMotion` |
+| Scope       | What it sends                                              |
+| ----------- | ---------------------------------------------------------- |
+| `buffer`    | the whole buffer (default)                                 |
+| `range`     | the `[range]` or visual selection                          |
+| `paragraph` | the non-blank block around the cursor                      |
+| `section`   | a Markdown heading through the next same-or-higher heading |
+| `motion`    | whatever an operator covers, via `<Plug>AirMotion`         |
 
 Partial scopes still diff against the **whole** buffer: the model sees the
 surrounding text as context, revises only the marked region, and the result is
@@ -177,6 +177,18 @@ make test
 No network and no AWS calls: the dispatcher is tested against a fake backend,
 the Bedrock backend against a stub `aws` executable plus direct `parse()` unit
 tests, and `g:Air_backend` bypasses the layer entirely.
+
+## Linting
+
+[pre-commit](https://pre-commit.com) runs `vint` on the Vim script, `shellcheck`
+on the shell, `prettier` on Markdown/YAML, `typos` on everything, and
+`committed` on the commit message.
+
+```sh
+make hooks         # install the pre-commit and commit-msg hooks
+make lint          # run every hook over the whole tree
+make update-hooks  # bump pinned hook versions
+```
 
 ## Design notes
 

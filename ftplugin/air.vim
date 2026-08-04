@@ -1,5 +1,7 @@
 " ftplugin for the air prompt buffer (R8a.4, R8a.5)
 
+scriptencoding utf-8
+
 if exists('b:did_ftplugin')
   finish
 endif

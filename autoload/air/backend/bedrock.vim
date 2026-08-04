@@ -4,6 +4,8 @@
 " Everything Bedrock-specific lives here: the converse request shape, model
 " resolution, response parsing and AWS error mapping.
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

@@ -1,5 +1,7 @@
 " vim-air — target text extraction (§5)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 

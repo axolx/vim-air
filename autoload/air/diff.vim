@@ -1,5 +1,7 @@
 " vim-air — diff session management (§4, R8.3, R8.4)
 
+scriptencoding utf-8
+
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 
