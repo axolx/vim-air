@@ -1,0 +1,444 @@
+*air.txt*  Vim AI Review — propose LLM revisions, review them in diff mode
+
+Author:  vim-air
+License: MIT
+
+==============================================================================
+CONTENTS                                                          *vim-air*
+
+    1. Introduction ......................... |air-introduction|
+    2. Requirements ......................... |air-requirements|
+    3. Quick start .......................... |air-quickstart|
+    4. Commands ............................. |air-commands|
+    5. Scopes ............................... |air-scopes|
+    6. The prompt buffer .................... |air-prompt-buffer|
+    7. Named prompts ........................ |air-named-prompts|
+    8. Reviewing a proposal ................. |air-review|
+    9. Configuration ........................ |air-config|
+   10. Mappings ............................. |air-mappings|
+   11. Backends ............................. |air-backends|
+   12. Hooks ................................ |air-hooks|
+   13. Troubleshooting ...................... |air-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                          *air-introduction*
+
+vim-air treats an LLM as a reviser. You give it a prompt and a region of text;
+it produces a proposed new version in a scratch buffer beside the original,
+in Vim's native diff mode. You then accept or reject changes with |]c|, |[c|,
+|do| and |dp|.
+
+There is no bespoke review UI, no floating windows and no virtual text. The
+review interface is the one you already know.
+
+It is built for prose as much as for code. Copy editing, tightening, removing
+clichés and checking claims are first-class uses.
+
+==============================================================================
+2. REQUIREMENTS                                          *air-requirements*
+
+- Vim 8.0 or later, or Neovim. Pure Vimscript; no Lua or Python host.
+- The AWS CLI v2 on your $PATH, with working credentials.
+- Amazon Bedrock model access granted in your account and region.
+- A model ID in |g:air_model| — there is no default, because Bedrock model IDs
+  are account- and region-specific.
+
+vim-air never handles credentials. The AWS CLI resolves them however you
+already do: environment variables, a config profile, SSO, or an instance or
+container role. Use |g:air_aws_profile| and |g:air_aws_region| to pick among
+them.
+
+Minimum configuration: >
+
+    let g:air_model = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+    let g:air_aws_region = 'us-east-1'   " or rely on your AWS config
+
+Verify the plumbing outside Vim first: >
+
+    aws bedrock-runtime converse --model-id "$MODEL" \
+        --messages '[{"role":"user","content":[{"text":"hi"}]}]'
+
+Other backends are planned; see |air-backends|.
+
+==============================================================================
+3. QUICK START                                            *air-quickstart*
+
+Revise the whole buffer, typing the prompt in a scratch buffer: >
+
+    :Air
+    (type "Tighten the prose. Preserve my voice.", then press <CR>)
+
+Revise with a one-line prompt: >
+
+    :Air tighten the opening paragraph
+
+Revise the visual selection: >
+
+    :'<,'>Air reduce passive voice
+
+Use a named prompt (see |air-named-prompts|): >
+
+    :Air grammar
+
+Then review: >
+
+    ]c      next change
+    [c      previous change
+    do      take the proposed hunk
+    dp      push your version over the proposal
+    :AirClose
+
+==============================================================================
+4. COMMANDS                                                  *air-commands*
+
+                                                                      *:Air*
+:[range]Air [options] [prompt]
+        Revise text and open a diff split with the proposal.
+
+        With no [range], the scope is |g:air_default_scope| ("buffer").
+        With a [range], only those lines are revised, but the diff is still
+        presented against the whole buffer.
+
+        [prompt] may be:
+        - literal prompt text
+        - the name of a prompt in |g:air_prompts| (see |air-named-prompts|)
+        - "@x" to read register x
+        - omitted entirely, which opens the |air-prompt-buffer|
+
+        [options] may be:
+            -scope={name}   override the scope, see |air-scopes|
+            -model={model}  override the model for this call
+            -f {path}       read the prompt from a file
+            -f={path}       same
+
+                                        *:AirBuffer* *:AirParagraph* *:AirSection*
+:AirBuffer [options] [prompt]
+:AirParagraph [options] [prompt]
+:AirSection [options] [prompt]
+        Shorthands for the corresponding |air-scopes|.
+
+                                                                *:AirAbort*
+:AirAbort
+        Cancel the request in flight.
+
+                                                                *:AirClose*
+:AirClose
+        Close the proposal window, run |:diffoff| on the source window and
+        restore the window options and 'diffopt' that were changed for the
+        session. Works from either side of the diff.
+
+                                                                  *:AirLog*
+:AirLog
+        Show the recent request/response log, including the full stdout and
+        stderr of failed backend invocations.
+
+==============================================================================
+5. SCOPES                                                      *air-scopes*
+
+The scope decides which lines are sent for revision. The proposal always
+contains the entire buffer with only that region replaced, so hunk-by-hunk
+merging works normally.
+
+buffer      The whole buffer. Default.
+range       The given [range], or the visual selection.
+paragraph   The contiguous non-blank block around the cursor. From a blank
+            line, the next paragraph forward.
+section     A Markdown heading through the next heading of the same or a
+            higher level. Deeper subsections are included. With no heading
+            above the cursor, falls back to the whole buffer.
+motion      The region covered by an operator; see |<Plug>AirMotion|.
+
+==============================================================================
+6. THE PROMPT BUFFER                                    *air-prompt-buffer*
+
+A bare |:Air| opens a scratch buffer for composing the prompt. Vim has no
+editable modal popup — |popup_create()| buffers are not modifiable — so a
+scratch buffer is what gives you full normal and insert mode, undo, registers,
+|gq|, spell checking and abbreviations while writing a prompt.
+
+Default mappings inside it:
+
+    <CR>        submit (normal mode only, so <CR> stays a newline in insert)
+    <C-s>       submit (normal or insert mode)
+    q, <C-c>    cancel
+    <C-p>       recall an older prompt
+    <C-n>       recall a newer prompt
+
+Lines starting with 'g:air_prompt_comment' (default "#") are ignored, like a
+git commit message. One comment line is a directive: >
+
+    # scope: paragraph
+
+Edit it before submitting to change the scope without starting over.
+
+Set |g:air_prompt_ui| to "input" if you would rather answer a one-line
+|input()| prompt with named-prompt completion.
+
+==============================================================================
+7. NAMED PROMPTS                                        *air-named-prompts*
+
+Named prompts are reusable instructions. These ship by default:
+
+    tighten     remove repetition and filler, preserve voice
+    grammar     grammar, spelling and punctuation only
+    passive     reduce passive voice
+    cliches     remove clichés and stock phrases
+    claims      find unsupported or overstated claims
+    simplify    shorter sentences, concrete words
+    structure   improve paragraph order and transitions
+    docs        add or improve doc comments
+    modernize   modernize code, preserve behaviour
+    refactor    simplify code, preserve behaviour and interface
+
+Add your own, overriding defaults by name: >
+
+    let g:air_prompts = {
+      \ 'mcphee': 'Rewrite in the voice of John McPhee. Keep every fact.',
+      \ 'tighten': 'Cut 20% of the words without losing meaning.',
+      \ }
+
+Per-filetype prompts take precedence over both: >
+
+    let g:air_ft_prompts = {
+      \ 'markdown': {'links': 'Check every link is described by its text.'},
+      \ 'go':       {'docs':  'Add godoc comments to exported symbols.'},
+      \ }
+
+Prompts may use the {filetype} and {filename} placeholders.
+
+==============================================================================
+8. REVIEWING A PROPOSAL                                        *air-review*
+
+The proposal buffer is a scratch buffer: 'buftype' is "nofile", it is wiped
+when closed, and it is 'nomodifiable' unless |g:air_modifiable| is set. It
+inherits the source buffer's 'filetype', 'fileformat' and 'fileencoding' so
+syntax highlighting and diffing behave.
+
+Review with the native diff commands: |]c| |[c| |do| |dp| |:diffget|
+|:diffput|. Your source buffer is a normal buffer throughout, so |u| works as
+always.
+
+If the response is identical to your text, no split opens and vim-air reports
+"no changes proposed".
+
+==============================================================================
+9. CONFIGURATION                                               *air-config*
+
+|g:air_model| is the only setting you must provide.
+
+                                                              *g:air_model*
+The Bedrock model ID or inference profile ID. Required; there is no default.
+On-demand access to many models needs the regional inference-profile prefix
+("us.", "eu.", "apac."). >
+    let g:air_model = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
+
+                                                            *g:air_aws_cmd*
+The AWS CLI executable. Default "aws". >
+    let g:air_aws_cmd = '/usr/local/bin/aws'
+
+                                  *g:air_aws_profile* *g:air_aws_region*
+Passed to the CLI as --profile and --region when set. Empty means the CLI
+resolves them from your environment and config as usual. >
+    let g:air_aws_profile = 'work'
+    let g:air_aws_region = 'us-east-1'
+
+                                                           *g:air_aws_args*
+Extra arguments appended to the aws invocation, for anything vim-air does not
+model directly. >
+    let g:air_aws_args = ['--cli-read-timeout', '0']
+
+                              *g:air_max_tokens* *g:air_temperature* *g:air_top_p*
+Bedrock inference configuration. Only maxTokens is sent by default (8192);
+temperature and topP are omitted unless you set them.
+
+That default is deliberate: newer models, including Claude Sonnet 4.5 and the
+reasoning models, reject temperature with a ValidationException saying it is
+deprecated. Set it only if your model accepts it. >
+    let g:air_max_tokens = 16384
+    let g:air_temperature = 0.2
+
+                                                   *g:air_inference_config*
+Merged over the above, for any other InferenceConfiguration field. >
+    let g:air_inference_config = {'stopSequences': ['<<<END>>>']}
+
+                                                              *g:air_async*
+Run the backend asynchronously via |job_start()| or jobstart(). Default 1.
+Falls back to a blocking |system()| call when jobs are unavailable.
+
+                                                            *g:air_timeout*
+Seconds before an in-flight request is killed. Default 120. 0 disables.
+
+                                                    *g:air_max_input_bytes*
+Confirm before sending more than this many bytes. Default 100000.
+
+                                                  *g:air_cleanup_tempfiles*
+Delete the request JSON files after each call. Default 1. Set to 0 to inspect
+exactly what was sent to Bedrock.
+
+                                                              *g:air_split*
+"vertical" (default) or "horizontal".
+
+                                                            *g:air_diffopt*
+'diffopt' value for the duration of a session, restored on |:AirClose|.
+Default "internal,filler,algorithm:patience". Empty leaves 'diffopt' alone.
+
+                                                        *g:air_modifiable*
+Allow editing the proposal before merging. Default 0.
+
+                                                      *g:air_default_scope*
+Scope for |:Air| without a range. Default "buffer".
+
+                                                          *g:air_prompt_ui*
+"buffer" (default) or "input". See |air-prompt-buffer|.
+
+                     *g:air_prompt_height* *g:air_prompt_comment* *g:air_prefill_last*
+Prompt buffer height (default 10), comment prefix (default "#"), and whether
+to prefill the previous prompt (default 1).
+
+                            *g:air_history* *g:air_history_file* *g:air_history_size*
+Prompt history: enabled (default 1), storage path (default
+~/.cache/vim/air-history.jsonl, or |stdpath()| cache in Neovim), and how many
+prompts to keep (default 200).
+
+                                                      *g:air_system_prompt*
+The instruction that forces plain-text-only output, sent as the Bedrock system
+field. Override with care: chat-tuned models otherwise narrate their changes,
+which corrupts the diff.
+
+                                                       *g:air_proposal_maps*
+Map "q" to |:AirClose| in the proposal buffer. Default 1.
+
+                                                           *g:air_log_size*
+Log entries to retain. Default 50.
+
+Every option can be set buffer-locally with a b: prefix, e.g.
+b:air_model.
+
+==============================================================================
+10. MAPPINGS                                                 *air-mappings*
+
+vim-air defines no default mappings. |<Plug>| mappings are provided: >
+
+    nmap <Leader>ar <Plug>AirRevise
+    xmap <Leader>ar <Plug>AirRevise
+    nmap <Leader>ap <Plug>AirParagraph
+    nmap <Leader>as <Plug>AirSection
+    nmap <Leader>am <Plug>AirMotion
+    nmap <Leader>aq <Plug>AirClose
+
+                                                          *<Plug>AirMotion*
+An operator. It prompts for the region you move over: >
+
+    <Leader>amip     revise the inner paragraph
+    <Leader>amaf     revise a function, with a filetype text object plugin
+
+==============================================================================
+11. BACKENDS                                                 *air-backends*
+
+vim-air is built for multiple backends but currently ships one: "bedrock".
+
+                                                       *g:air_backend_name*
+Selects the backend. Default "bedrock". >
+    let g:air_backend_name = 'bedrock'
+
+Adding a backend means dropping one file on your 'runtimepath' at
+autoload/air/backend/{name}.vim implementing three functions. Nothing else in
+the plugin needs to change: the dispatcher owns argv execution, async and sync
+transports, timeouts, aborting, temp-file cleanup and logging.
+
+                                                    *air-backend-interface*
+    air#backend#{name}#check() -> string
+        '' when the backend is usable, otherwise a user-facing reason such as
+        a missing executable or an unset model. Called before every request,
+        so misconfiguration is reported without spawning a process.
+
+    air#backend#{name}#request({payload}, {opts}) -> dict
+        Describes the subprocess to run:
+            argv          list, required
+            stdin         string, optional
+            cleanup       list of files to delete afterwards, optional
+            cleanup_dirs  list of directories to delete afterwards, optional
+        {payload} is {'system': ..., 'user': ...}. {opts} carries per-request
+        overrides such as {'model': ...}.
+
+    air#backend#{name}#parse({result}) -> dict
+        Maps {'status': exit code, 'stdout': ..., 'stderr': ...} onto
+        {'ok': 0|1, 'text': ..., 'error': ..., 'warning': ...}.
+        Backends own their own error mapping, so provider-specific advice stays
+        with the provider.
+
+A backend must be a real file: Vim raises E746 if an autoload-named function is
+defined in a script whose path does not match.
+
+==============================================================================
+12. HOOKS                                                       *air-hooks*
+
+                                                            *g:Air_backend*
+Bypass the backend layer entirely, including subprocess handling. Receives
+({payload}, {opts}, {Cb}) and must call {Cb} with a dictionary
+{'ok': 0|1, 'text': ..., 'error': ..., 'raw': ...}. Useful for a non-subprocess
+transport, and used by the test suite so tests never call AWS. >
+
+    let g:Air_backend = function('MyBackend')
+
+Note the capital: legacy Vim raises E704 for a lowercase variable holding a
+|Funcref|. A function name as a string works with either case: >
+
+    let g:air_backend = 'MyBackend'
+
+                                                      *g:Air_output_filter*
+Post-process the model's text before it is treated as the revision. >
+
+    let g:Air_output_filter = function('StripBanner')
+
+==============================================================================
+13. TROUBLESHOOTING                                   *air-troubleshooting*
+
+Run |:AirLog| first. It shows the exact argv, the prompt, and the full stdout
+and stderr.
+
+"aws not found in $PATH"
+    Install the AWS CLI v2, or point |g:air_aws_cmd| at it.
+
+"no model set"
+    Set |g:air_model|. There is deliberately no default.
+
+"Unable to locate credentials" / "ExpiredToken"
+    Refresh credentials the way you normally do (often "aws sso login"), or
+    set |g:air_aws_profile|.
+
+"AccessDeniedException"
+    The identity needs bedrock:InvokeModel on that model ARN.
+
+"You don't have access to the model"
+    Request model access in the Bedrock console, in the region named by
+    |g:air_aws_region|.
+
+"`temperature` is deprecated for this model"
+    Unset |g:air_temperature| (and |g:air_top_p|). Newer Bedrock models reject
+    those parameters; vim-air omits them unless you set them.
+
+"ValidationException"
+    Usually the model ID or region. On-demand access to many models requires
+    the regional inference-profile prefix, e.g.
+    "us.anthropic.claude-sonnet-4-20250514-v1:0" rather than
+    "anthropic.claude-sonnet-4-20250514-v1:0".
+
+"response hit maxTokens and is truncated"
+    The proposal is incomplete; do not merge it blindly. Raise
+    |g:air_max_tokens| or revise a smaller scope.
+
+The proposal starts with an odd or invisible character
+    It should not: vim-air strips byte-order marks and leading zero-width and
+    non-breaking blanks from every response. If you still see one, run
+    |:AirLog| and report the raw response.
+
+The proposal contains commentary, not just the revised text
+    The model ignored the system prompt. Try a stronger model, or filter the
+    output with |g:Air_output_filter|.
+
+The diff is one enormous hunk
+    Your text is probably one long line per paragraph. Vim diffs by line. Try
+    one sentence per line for prose, or add "iwhite" to |g:air_diffopt|.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
