@@ -9,18 +9,19 @@ scriptencoding utf-8
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 
+" REQ 11.1, REQ 11.2, REQ 11.3
 function! air#backend#bedrock#cmd() abort
   return air#get('aws_cmd', 'aws')
 endfunction
 
-" R7.12 — per-call model wins, then g:air_model.
-function! air#backend#bedrock#model(opts) abort
-  let model = get(a:opts, 'model', '')
-  return !empty(model) ? model : air#get('model', '')
+" R7.12 — use the configured Bedrock model.
+function! air#backend#bedrock#model() abort
+  return air#get('model', '')
 endfunction
 
 " ----------------------------------------------------------------- check -----
 
+" REQ 11.6, REQ 11.14
 function! air#backend#bedrock#check() abort
   let cmd = air#backend#bedrock#cmd()
   if !executable(cmd)
@@ -30,7 +31,7 @@ function! air#backend#bedrock#check() abort
 
   " Bedrock model IDs are account- and region-specific, so there is no safe
   " default to fall back on.
-  if empty(air#backend#bedrock#model({}))
+  if empty(air#backend#bedrock#model())
     return 'no model set — e.g. let g:air_model = '
           \ . "'us.anthropic.claude-sonnet-4-20250514-v1:0' "
           \ . '(see :help g:air_model)'
@@ -45,6 +46,7 @@ endfunction
 " the reasoning models) reject `temperature` with a ValidationException saying
 " it is deprecated, so it is omitted unless explicitly configured. Same for
 " topP, which those models deprecate alongside it.
+" REQ 11.7, REQ 11.8, REQ 11.9
 function! air#backend#bedrock#inference_config() abort
   let cfg = {'maxTokens': air#get('max_tokens', 8192)}
 
@@ -63,8 +65,9 @@ function! air#backend#bedrock#inference_config() abort
 endfunction
 
 " R7.9 — bedrock-runtime converse: one request shape for every Bedrock model.
+" REQ 6.1, REQ 11.1, REQ 11.4, REQ 11.5, REQ 11.10
 function! air#backend#bedrock#request(payload, opts) abort
-  let model = air#backend#bedrock#model(a:opts)
+  let model = air#backend#bedrock#model()
   if empty(model)
     throw 'air: no Bedrock model set (g:air_model)'
   endif
@@ -116,13 +119,14 @@ endfunction
 " Converse response shape:
 "   {"output":{"message":{"role":"assistant","content":[{"text":"..."}]}},
 "    "stopReason":"end_turn","usage":{...},"metrics":{...}}
+" REQ 11.11, REQ 11.12, REQ 11.13
 function! air#backend#bedrock#parse(result) abort
   " R7.16 — the AWS CLI reports auth, throttling and validation errors on
   " stderr with a non-zero exit.
   if a:result.status != 0
     return {'ok': 0, 'text': '',
-          \ 'error': 'aws failed: ' . s:humanize(s:last_line(a:result.stderr,
-          \ 'exit status ' . a:result.status))}
+          \ 'error': 'aws failed: ' . s:last_line(a:result.stderr,
+          \ 'exit status ' . a:result.status)}
   endif
 
   let raw = substitute(a:result.stdout, '^\_s*\|\_s*$', '', 'g')
@@ -143,7 +147,7 @@ function! air#backend#bedrock#parse(result) abort
 
   " Some failures come back as a JSON body with a zero exit status.
   if !has_key(resp, 'output') && has_key(resp, 'message')
-    return {'ok': 0, 'text': '', 'error': 'bedrock: ' . s:humanize(resp.message)}
+    return {'ok': 0, 'text': '', 'error': 'bedrock: ' . resp.message}
   endif
 
   let content = get(get(get(resp, 'output', {}), 'message', {}), 'content', [])
@@ -179,42 +183,6 @@ endfunction
 function! s:last_line(text, fallback) abort
   let lines = filter(split(a:text, "\n"), 'v:val !~# "^\\s*$"')
   return empty(lines) ? a:fallback : lines[-1]
-endfunction
-
-" Turn the most common AWS failures into something actionable.
-function! s:humanize(detail) abort
-  let d = a:detail
-  " Newer models reject inference parameters that older ones require.
-  if d =~? '`\?temperature`\? is deprecated'
-    return d . ' — this model rejects temperature: unset g:air_temperature '
-          \ . '(and g:air_top_p)'
-  endif
-  if d =~? '`\?top_\?p`\? is deprecated\|topP.*not supported'
-    return d . ' — this model rejects topP: unset g:air_top_p'
-  endif
-  if d =~? 'Unable to locate credentials\|ExpiredToken\|InvalidClientTokenId'
-        \ . '\|security token included in the request is invalid'
-    return d . ' — refresh your AWS credentials (aws sso login) or set '
-          \ . 'g:air_aws_profile'
-  endif
-  if d =~? 'AccessDenied\|not authorized'
-    return d . ' — this identity needs bedrock:InvokeModel on that model'
-  endif
-  if d =~? "don't have access to the model\\|access to the model with the specified"
-    return d . ' — request model access in the Bedrock console for '
-          \ . 'g:air_aws_region'
-  endif
-  if d =~? 'ValidationException'
-    return d . ' — check g:air_model and g:air_aws_region (on-demand models '
-          \ . 'often need the regional "us."/"eu." inference-profile prefix)'
-  endif
-  if d =~? 'ThrottlingException\|TooManyRequests'
-    return d . ' — throttled by Bedrock; retry shortly'
-  endif
-  if d =~? 'Could not connect to the endpoint\|EndpointConnectionError'
-    return d . ' — is g:air_aws_region a region where Bedrock is enabled?'
-  endif
-  return d
 endfunction
 
 let &cpoptions = s:save_cpo

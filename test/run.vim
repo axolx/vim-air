@@ -1,6 +1,7 @@
 " vim-air test suite (R10.2). Run: make test  /  test/run.sh
 " No network, no AWS and no OpenAI calls: a fake backend, stub `aws` and
 " `curl` executables, and g:Air_backend.
+" REQ 16.2, REQ 16.3, REQ 16.4
 
 scriptencoding utf-8
 
@@ -215,19 +216,10 @@ call s:eq(air#parse_args('-scope=paragraph tighten').scope, 'paragraph',
       \ '-scope= is parsed')
 call s:eq(air#parse_args('-scope=paragraph tighten').source, 'named',
       \ 'flags and named prompt combine')
-call s:eq(air#parse_args('-model=foo/bar hello').model, 'foo/bar',
-      \ '-model= is parsed')
 
 call setreg('p', "from register\n")
 call s:eq(air#parse_args('@p').prompt, 'from register', 'register prompt (R8a.9)')
 call s:eq(air#parse_args('@p').source, 'register', 'register source tagged')
-
-let s:tmp = tempname()
-call writefile(['file prompt'], s:tmp)
-call s:eq(air#parse_args('-f ' . s:tmp).prompt, 'file prompt',
-      \ 'file prompt via -f (R8a.9)')
-call s:eq(air#parse_args('-f=' . s:tmp).prompt, 'file prompt',
-      \ 'file prompt via -f=')
 
 let s:threw = 0
 try
@@ -236,9 +228,24 @@ catch /^air:/
   let s:threw = 1
 endtry
 call s:ok(s:threw, 'unknown flag throws')
+for s:alias in ['-model=x', '-f prompt.txt', '-m=x', '-file prompt.txt', '-f=prompt.txt']
+  let s:threw = 0
+  try
+    call air#parse_args(s:alias . ' go')
+  catch /^air: unknown option/
+    let s:threw = 1
+  endtry
+  call s:ok(s:threw, 'removed alias ' . split(s:alias)[0][0 : 5] . ' is an unknown option')
+endfor
+call setreg('z', '')
+call s:eq(air#parse_args('@z').prompt, '',
+      \ 'an empty register gives an empty prompt, so the prompt buffer opens')
 
 call s:ok(index(air#complete('tig', '', 0), 'tighten') >= 0,
       \ 'completion offers named prompts')
+
+call s:eq(air#complete('-model', '', 0), [], 'removed model option is not completed')
+call s:eq(air#complete('-f', '', 0), [], 'removed file option is not completed')
 
 " ============================================================= compose =======
 
@@ -246,7 +253,7 @@ call s:say('--- compose ---')
 
 call s:scratch(['alpha', 'beta', 'gamma'])
 let s:req = air#request(air#scope#resolve('buffer', 0, 0),
-      \ {'prompt': 'tighten it', 'model': '', 'scope': ''})
+      \ {'prompt': 'tighten it', 'scope': ''})
 let s:composed = air#prompt#compose(s:req)
 
 call s:eq(sort(keys(s:composed)), ['system', 'user'],
@@ -262,19 +269,24 @@ call s:ok(s:composed.user !~# 'BEGIN REGION',
       \ 'whole-buffer scope needs no region markers')
 
 let s:req2 = air#request(air#scope#resolve('range', 2, 2),
-      \ {'prompt': 'fix', 'model': '', 'scope': ''})
+      \ {'prompt': 'fix', 'scope': ''})
 let s:composed2 = air#prompt#compose(s:req2).user
 call s:ok(s:composed2 =~# '<<< BEGIN REGION >>>\nbeta\n<<< END REGION >>>',
       \ 'partial scope marks the region inside full context (R5.2)')
 call s:ok(s:composed2 =~# 'alpha', 'partial scope still sends surrounding context')
 
 let s:req3 = air#request(air#scope#resolve('buffer', 0, 0),
-      \ {'prompt': 'lint this {filetype}', 'model': '', 'scope': ''})
+      \ {'prompt': 'lint this {filetype}', 'scope': ''})
 let b:dummy = 1
 setlocal filetype=markdown
 let s:req3.filetype = 'markdown'
 call s:ok(air#prompt#compose(s:req3).user =~# 'lint this markdown',
       \ 'compose expands {filetype} placeholder (R6.5)')
+let s:req3.filename = 'R&D~\1.md'
+call s:ok(stridx(air#prompt#compose(s:req3).user, 'lint this markdown') >= 0
+      \ && stridx(air#prompt#compose(extend(copy(s:req3),
+      \ {'prompt': 'edit {filename}'})).user, 'edit R&D~\1.md') >= 0,
+      \ 'placeholders insert &, ~ and \ literally (R6.5)')
 
 " ========================================================== diff session ====
 
@@ -285,7 +297,10 @@ let s:src = s:scratch(['alpha', 'beta', 'gamma'])
 let s:orig_diffopt = &diffopt
 let g:air_fake_reply = "ALPHA\nbeta\ngamma"
 
+let g:air_split = 'horizontal'
 call air#revise('buffer', 1, 3, 'shout the first line')
+unlet g:air_split
+call s:ok(winwidth(0) < &columns, 'review stays vertical with the removed split setting')
 
 call s:eq(len(g:air_fake_prompts), 1, 'backend called once')
 call s:eq(winnr('$'), 2, 'diff split opened (R4.4)')
@@ -297,6 +312,8 @@ call s:ok(!&modifiable, 'proposal is nomodifiable by default (R4.6)')
 call s:eq(&buftype, 'nofile', 'proposal is a scratch buffer')
 call s:ok(getwinvar(bufwinnr(s:src), '&diff'), 'source window is in diff mode')
 call s:ok(&diffopt =~# 'patience', 'diffopt augmented for the session (R8.4)')
+call s:ok(&diffopt =~# 'inline:word',
+      \ 'word-level highlighting is enabled for the session (R8.4)')
 
 " Native merge commands still drive everything (R4.7).
 let s:pwin = winnr()
@@ -312,6 +329,83 @@ call s:eq(winnr('$'), 1, 'AirClose closes the split (R4.9)')
 call s:ok(!&diff, 'AirClose runs diffoff on the source window (R4.9)')
 call s:eq(&diffopt, s:orig_diffopt, 'AirClose restores global diffopt (R8.4)')
 call s:eq(len(air#diff#sessions()), 0, 'session state cleared')
+
+" R8.4 — a diffopt item this Vim rejects is dropped, not fatal.
+call s:reset()
+call s:scratch(['one', 'two'])
+let g:air_diffopt = 'internal,no-such-item:1,algorithm:patience'
+let g:air_fake_reply = "ONE\ntwo"
+call air#revise('buffer', 1, 2, 'shout')
+call s:eq(winnr('$'), 2, 'an unsupported diffopt item does not stop the session')
+call s:eq(&diffopt, 'internal,algorithm:patience',
+      \ 'supported diffopt items are kept, the unsupported one dropped')
+unlet g:air_diffopt
+call air#diff#close()
+call s:eq(&diffopt, s:orig_diffopt, 'diffopt is still restored afterwards')
+
+" REQ 3.7 — dp from a nomodifiable proposal still sends a hunk to the source.
+call s:reset()
+let s:src = s:scratch(['alpha', 'beta'])
+let g:air_fake_reply = "ALPHA\nbeta"
+call air#revise('buffer', 1, 2, 'shout')
+call s:ok(!&modifiable, 'proposal is nomodifiable for the dp check')
+silent! normal! dp
+call s:eq(getbufline(s:src, 1, '$'), ['ALPHA', 'beta'],
+      \ 'dp in the proposal sends the hunk to the source buffer')
+call air#diff#close()
+
+" REQ 3.6, REQ 3.19 — g:air_modifiable and g:air_proposal_maps.
+call s:reset()
+call s:scratch(['alpha', 'beta'])
+let g:air_modifiable = 1
+let g:air_proposal_maps = 0
+let g:air_fake_reply = "ALPHA\nbeta"
+call air#revise('buffer', 1, 2, 'shout')
+call s:ok(&modifiable, 'g:air_modifiable leaves the proposal modifiable')
+call s:ok(empty(maparg('q', 'n')), 'g:air_proposal_maps = 0 skips the q map')
+call air#diff#close()
+unlet g:air_modifiable g:air_proposal_maps
+
+" R4.9 — window sizes the user set survive the session.
+call s:reset()
+let s:src = s:scratch(['alpha', 'beta'])
+vnew
+wincmd p
+vertical resize 60
+let s:layout = winrestcmd()
+let g:air_fake_reply = "ALPHA\nbeta"
+call air#revise('buffer', 1, 2, 'shout')
+call s:eq(winnr('$'), 3, 'proposal opened beside two windows')
+call air#diff#close()
+call s:eq(winrestcmd(), s:layout, 'AirClose restores window sizes (R4.9)')
+
+" The cursor lands on the first change, even when it starts on line 1.
+call s:reset()
+call s:scratch(['a', 'b', 'c', 'd', 'e'])
+let g:air_fake_reply = "A\nb\nc\nD\ne"
+call air#revise('buffer', 1, 5, 'shout a and d')
+call s:eq(line('.'), 1, 'cursor stays on a change that starts on line 1')
+call air#diff#close()
+
+call s:reset()
+call s:scratch(['a', 'b', 'c', 'd', 'e'])
+let g:air_fake_reply = "a\nb\nc\nD\ne"
+call air#revise('buffer', 1, 5, 'shout d')
+call s:eq(line('.'), 4, 'cursor lands on the first change')
+call air#diff#close()
+
+" A direct :quit of the proposal restores them on the next tick.
+call s:reset()
+let s:src = s:scratch(['alpha', 'beta'])
+vnew
+wincmd p
+vertical resize 60
+let s:layout = winrestcmd()
+call air#revise('buffer', 1, 2, 'shout')
+execute bufwinnr(air#diff#sessions()[s:src].proposal) . 'wincmd w'
+quit
+sleep 20m
+call s:eq(winrestcmd(), s:layout, ':quit on the proposal restores window sizes')
 
 " R8.3 — identical response opens nothing.
 call s:reset()
@@ -329,6 +423,98 @@ call s:eq(getline(1, '$'), ['keep1', 'CHANGED', 'keep2'],
       \ 'partial revision spliced into full buffer (R5.2)')
 call air#diff#close()
 
+" Keep tabline height fixed while comparing window sizes across tabs.
+let s:saved_showtabline = &showtabline
+set showtabline=2
+
+" One review across tabs, with source options and layout restored on replacement.
+call s:reset()
+let s:first_src = s:scratch(['first', 'buffer'])
+setlocal wrap foldmethod=manual foldcolumn=2 noscrollbind nocursorbind
+let s:first_win = win_getid()
+vnew
+wincmd p
+vertical resize 55
+let s:first_layout = winrestcmd()
+let g:air_fake_reply = "FIRST\nbuffer"
+call air#revise('buffer', 1, 2, 'shout')
+let s:first_proposal = bufnr('%')
+tabnew
+let s:second_src = bufnr('%')
+call setline(1, ['second', 'buffer'])
+let g:air_fake_reply = "SECOND\nbuffer"
+call air#revise('buffer', 1, 2, 'shout')
+let s:second_win = win_getid()
+call s:eq(len(air#diff#sessions()), 1, 'only one review exists across tabs')
+call s:ok(!bufexists(s:first_proposal), 'new review wipes the old proposal')
+call s:ok(has_key(air#diff#sessions(), s:second_src), 'new source owns the review')
+call win_gotoid(s:first_win)
+call s:ok(!&diff && &wrap && &foldmethod ==# 'manual' && &foldcolumn == 2
+      \ && !&scrollbind && !&cursorbind, 'replacement restores the old source options')
+call s:eq(winrestcmd(), s:first_layout, 'replacement restores the old tab layout')
+call win_gotoid(s:second_win)
+call s:eq(&diffopt, 'internal,filler,algorithm:patience,inline:word',
+      \ 'replacement retains the review diff options')
+call air#diff#close()
+call s:eq(&diffopt, s:orig_diffopt, 'replacement restores the original global diffopt')
+tabclose!
+
+" A proposal wiped from another tab restores the actual source window.
+call s:reset()
+let s:src = s:scratch(['alpha', 'beta'])
+setlocal wrap foldmethod=manual foldcolumn=3 noscrollbind nocursorbind
+let s:source_win = win_getid()
+vnew
+wincmd p
+vertical resize 50
+let s:layout = winrestcmd()
+let g:air_fake_reply = "ALPHA\nbeta"
+call air#revise('buffer', 1, 2, 'shout')
+let s:proposal = bufnr('%')
+tabnew
+let s:other_win = win_getid()
+execute 'bwipeout!' s:proposal
+sleep 20m
+call s:eq(win_getid(), s:other_win, 'cross-tab cleanup preserves focus')
+call win_gotoid(s:source_win)
+call s:ok(!&diff && &wrap && &foldmethod ==# 'manual' && &foldcolumn == 3
+      \ && !&scrollbind && !&cursorbind, 'cross-tab wipe restores source options')
+call s:eq(winrestcmd(), s:layout, 'cross-tab wipe restores source layout')
+call s:eq(&diffopt, s:orig_diffopt, 'cross-tab wipe restores global diffopt')
+call win_gotoid(s:other_win)
+tabclose!
+
+call air#revise('buffer', 1, 2, 'shout')
+tabnew
+let s:outside_win = win_getid()
+AirClose
+call s:eq(win_getid(), s:outside_win, 'AirClose from another tab preserves focus')
+call s:eq(len(air#diff#sessions()), 0, 'AirClose works from an unrelated window')
+call win_gotoid(s:source_win)
+call s:ok(!&diff, 'AirClose from another tab restores the source')
+call win_gotoid(s:outside_win)
+tabclose!
+
+let &showtabline = s:saved_showtabline
+
+" An asynchronous response cannot overwrite edits made after the request.
+" REQ 3.21
+function! DeferredBackend(payload, opts, Cb) abort
+  let g:Air_pending = a:Cb
+endfunction
+call s:reset()
+let s:src = s:scratch(['original'])
+let g:Air_backend = function('DeferredBackend')
+call air#revise('buffer', 1, 1, 'revise')
+call setline(1, 'user edit')
+call call(g:Air_pending, [{'ok': 1, 'text': 'model edit', 'raw': '', 'error': ''}])
+call s:eq(getline(1), 'user edit', 'a stale response preserves the user edit')
+call s:eq(len(air#diff#sessions()), 0, 'a stale response opens no review')
+call s:ok(join(air#log#entries(), "\n") =~# 'source buffer changed',
+      \ 'a stale response explains how to retry')
+unlet g:Air_pending
+let g:Air_backend = function('FakeBackend')
+
 " Backend failure surfaces as an error, not a split.
 call s:reset()
 call s:scratch(['x'])
@@ -342,6 +528,13 @@ endtry
 call s:eq(winnr('$'), 1, 'failed request opens no split')
 call s:ok(len(air#log#entries()) > 0, 'failure is logged for :AirLog (R7.9)')
 
+call air#log#clear()
+call air#error("provider failed\nmore detail")
+call s:ok(execute('messages') =~# 'air: provider failed more detail',
+      \ 'multiline provider errors display on one line')
+call s:ok(join(air#log#entries(), "\n") =~# "provider failed\nmore detail",
+      \ 'multiline provider errors retain full log detail')
+
 " ========================================================== prompt buffer ===
 
 call s:say('--- prompt buffer ---')
@@ -351,45 +544,26 @@ let s:src = s:scratch(['alpha', 'beta'])
 let g:air_fake_ok = 1
 let g:air_fake_reply = "ALPHA\nbeta"
 
+let g:air_prompt_ui = 'input'
 call air#revise('buffer', 1, 2, '')
+unlet g:air_prompt_ui
 call s:eq(&filetype, 'air', 'bare :Air opens the prompt buffer (R8a.3)')
 call s:eq(&buftype, 'nofile', 'prompt buffer is scratch (R8a.4)')
 call s:ok(exists('b:air_request'), 'prompt buffer carries the request')
-call s:ok(getline(1, '$')[3] =~# '# scope: buffer',
-      \ 'prompt buffer shows an editable scope directive (R8a.8)')
 call s:ok(maparg('<CR>', 'n') =~# 'air#prompt#submit',
       \ '<CR> submits from normal mode (R8a.5)')
 call s:ok(empty(maparg('<CR>', 'i')),
       \ '<CR> stays a literal newline in insert mode (R8a.5)')
+call s:eq(getline(1, '$'), [''], 'with no history the prompt buffer starts empty')
 
-stopinsert
-call setline(5, 'shout the first line')
+call setline(1, ['# shout', 'the first line'])
 call air#prompt#submit()
 
 call s:eq(len(g:air_fake_prompts), 1, 'prompt buffer submission reaches backend')
-call s:ok(g:air_fake_prompts[0] =~# 'shout the first line',
-      \ 'composed prompt contains the buffer body')
-call s:ok(g:air_fake_prompts[0] !~# '# scope:',
-      \ 'comment lines are stripped from the prompt')
+call s:ok(g:air_fake_prompts[0] =~# '# shout\nthe first line',
+      \ 'every line of the prompt buffer is sent, "#" lines included')
 call s:ok(exists('b:air_proposal'), 'submission opens the diff split')
 call air#diff#close()
-
-" Editing the scope directive re-resolves the region.
-call s:reset()
-call s:scratch(['p1a', 'p1b', '', 'p2a', 'p2b'])
-call cursor(4, 1)
-let g:air_fake_reply = 'X'
-call air#revise('buffer', 1, 5, '')
-call setline(4, '# scope: paragraph')
-call setline(5, 'rewrite')
-call air#prompt#submit()
-call s:eq(getline(1, '$'), ['p1a', 'p1b', '', 'X'],
-      \ 'edited scope directive re-resolves the region (R8a.8)')
-call air#diff#close()
-
-" R8a.10 — input UI is selectable.
-call s:reset()
-call s:eq(air#get('prompt_ui', 'buffer'), 'buffer', 'prompt_ui defaults to buffer')
 
 " ==================================================== backend: dispatcher ====
 
@@ -415,7 +589,29 @@ call air#backend#run(s:payload, {}, function('Capture'))
 call s:ok(!s:result.ok, 'unknown backend fails cleanly')
 call s:ok(s:result.error =~# 'unknown backend', 'unknown backend is named')
 call s:ok(s:result.error =~# 'bedrock', 'error lists available backends')
+
+" REQ 9.3 — a name that cannot be a file still lists the backends.
+let g:air_backend_name = 'open-ai'
+let s:result = {}
+call air#backend#run(s:payload, {}, function('Capture'))
+call s:ok(s:result.error =~# 'invalid backend name', 'invalid backend name is reported')
+call s:ok(s:result.error =~# 'bedrock', 'invalid name error lists available backends')
+
+" REQ 8.1 — a refused request leaves no history; a dispatched one does.
+let g:air_history = 1
+let g:air_history_file = tempname()
+call s:scratch(['alpha'])
+call air#revise('buffer', 1, 1, 'refused prompt')
+call s:eq(air#prompt#history(), [], 'a refused request is not recorded in history')
 unlet g:air_backend_name
+let g:Air_backend = s:saved_backend
+let g:air_fake_reply = 'ALPHA'
+call air#revise('buffer', 1, 1, 'sent prompt')
+call s:eq(air#prompt#history(), ['sent prompt'],
+      \ 'a dispatched request is recorded in history')
+call air#diff#close()
+unlet g:Air_backend
+let g:air_history = 0
 
 " A minimal third-party backend proves the interface is all that is required.
 " It has to be a real autoload file on the runtimepath: Vim raises E746 if an
@@ -511,9 +707,7 @@ let g:air_model = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
 call s:eq(air#backend#bedrock#check(), '',
       \ 'check passes with aws present and a model set')
 
-call s:eq(air#backend#bedrock#model({}), g:air_model, 'global model is used')
-call s:eq(air#backend#bedrock#model({'model': 'other'}), 'other',
-      \ 'per-request model wins (R7.6)')
+call s:eq(air#backend#bedrock#model(), g:air_model, 'global model is used')
 
 let s:req = air#backend#bedrock#request(s:payload, {})
 let s:argv = s:req.argv
@@ -629,26 +823,14 @@ let s:parsed = air#backend#bedrock#parse({'status': 0, 'stdout': s:err_body,
 call s:ok(!s:parsed.ok, 'a JSON error body with exit 0 is a failure')
 call s:ok(s:parsed.error =~# 'bedrock:', 'bedrock error bodies are labelled')
 
-" AWS failure messages are mapped to something actionable.
-let s:cases = [
-      \ ['The model returned the following errors: `temperature` is deprecated '
-      \  . 'for this model.', 'unset g:air_temperature'],
-      \ ['The model returned the following errors: `top_p` is deprecated for '
-      \  . 'this model.', 'unset g:air_top_p'],
-      \ ['Unable to locate credentials', 'aws sso login'],
-      \ ['An error occurred (AccessDeniedException) when calling Converse',
-      \  'bedrock:InvokeModel'],
-      \ ['An error occurred (ValidationException): bad model',
-      \  'inference-profile'],
-      \ ['An error occurred (ThrottlingException)', 'throttled'],
-      \ ['Could not connect to the endpoint URL', 'region'],
-      \ ]
-for s:case in s:cases
+" Preserve the provider's error detail without matching error phrases.
+for s:detail in ['Unable to locate credentials', 'AccessDeniedException',
+      \ 'ValidationException: bad model', 'a new provider error']
   let s:parsed = air#backend#bedrock#parse({'status': 254, 'stdout': '',
-        \ 'stderr': s:case[0]})
-  call s:ok(!s:parsed.ok, 'aws failure "' . s:case[0][0 : 20] . '..." fails')
-  call s:ok(s:parsed.error =~# s:case[1],
-        \ 'hint for "' . s:case[0][0 : 20] . '..." mentions ' . s:case[1])
+        \ 'stderr': s:detail})
+  call s:ok(!s:parsed.ok, 'AWS failures are rejected')
+  call s:eq(s:parsed.error, 'aws failed: ' . s:detail,
+        \ 'AWS error detail is preserved')
 endfor
 
 call s:eq(air#backend#bedrock#parse({'status': 1, 'stdout': '',
@@ -681,8 +863,6 @@ call air#backend#run(s:payload, {}, function('Capture'))
 call s:ok(!s:result.ok, 'a failing aws is reported as a failure')
 call s:ok(s:result.error =~# 'ValidationException',
       \ 'the AWS error detail survives the sync path')
-call s:ok(s:result.error =~# 'inference-profile',
-      \ 'the AWS error is annotated with a hint')
 
 " The async path keeps the streams separate on its own.
 let g:air_async = 1
@@ -733,18 +913,16 @@ call s:ok(air#backend#openai#check() =~# 'no model set',
       \ "g:air_openai_model = '' is reported")
 unlet g:air_openai_model
 
-call s:eq(air#backend#openai#model({}), 'gpt-6-luna',
+call s:eq(air#backend#openai#model(), 'gpt-6-luna',
       \ 'gpt-6-luna is the default model')
 call s:eq(air#backend#openai#reasoning_effort(), 'low',
       \ 'low is the default reasoning effort')
 let g:air_model = 'us.anthropic.some-bedrock-id'
-call s:eq(air#backend#openai#model({}), 'gpt-6-luna',
+call s:eq(air#backend#openai#model(), 'gpt-6-luna',
       \ 'the Bedrock g:air_model is not sent to openai')
 unlet g:air_model
 let g:air_openai_model = 'gpt-test'
-call s:eq(air#backend#openai#model({}), 'gpt-test', 'g:air_openai_model is used')
-call s:eq(air#backend#openai#model({'model': 'other'}), 'other',
-      \ 'per-call model overrides g:air_openai_model (R7.24)')
+call s:eq(air#backend#openai#model(), 'gpt-test', 'g:air_openai_model is used')
 
 let s:req = air#backend#openai#request(s:payload, {})
 let s:argv = s:req.argv
@@ -778,15 +956,22 @@ call s:eq(s:body.reasoning, {'effort': 'low'}, 'the reasoning effort is sent')
 unlet g:air_openai_model
 
 let g:air_openai_reasoning_effort = ''
-call s:ok(!has_key(air#backend#openai#body(s:payload, {}), 'reasoning'),
+call s:ok(!has_key(air#backend#openai#body(s:payload), 'reasoning'),
       \ "g:air_openai_reasoning_effort = '' leaves the effort to the API")
 unlet g:air_openai_reasoning_effort
 
-let g:air_openai_params = {'max_output_tokens': 500, 'text': {'verbosity': 'low'}}
-let s:body = air#backend#openai#body(s:payload, {})
-call s:eq(s:body.max_output_tokens, 500, 'g:air_openai_params adds fields')
-call s:eq(s:body.text, {'verbosity': 'low'}, 'g:air_openai_params can nest')
-unlet g:air_openai_params
+call s:eq(s:body.max_output_tokens, 8192, 'OpenAI output limit defaults to 8192')
+let g:air_openai_max_output_tokens = 500
+let g:air_openai_params = {'store': v:true, 'tools': [{'type': 'web_search'}],
+      \ 'model': 'ignored', 'instructions': 'ignored', 'input': 'ignored'}
+let s:body = air#backend#openai#body(s:payload)
+call s:eq(s:body.max_output_tokens, 500, 'explicit OpenAI output limit is used')
+call s:eq(s:body.store, v:false, 'legacy params cannot enable storage')
+call s:ok(!has_key(s:body, 'tools'), 'legacy params cannot enable tools')
+call s:eq(s:body.model, 'gpt-6-luna', 'legacy params cannot change the model')
+call s:eq(s:body.instructions, 'SYS', 'legacy params cannot change instructions')
+call s:eq(s:body.input, 'USER', 'legacy params cannot change input')
+unlet g:air_openai_params g:air_openai_max_output_tokens
 
 let g:air_openai_base_url = 'http://localhost:8080/v1/'
 let g:air_openai_api_key_env = 'MY_KEY'
@@ -856,40 +1041,21 @@ let s:parsed = air#backend#openai#parse({'status': 22, 'stdout': s:oa_401,
 call s:ok(!s:parsed.ok, 'an HTTP error is a failure')
 call s:ok(s:parsed.error =~# '^openai: Incorrect API key',
       \ 'the API error message is surfaced')
-call s:ok(s:parsed.error =~# 'check \$OPENAI_API_KEY', 'a bad key gets a hint')
 call s:ok(air#backend#openai#parse({'status': 22,
       \ 'stdout': "curl: (22) The requested URL returned error: 401\n" . s:oa_401,
       \ 'stderr': ''}).error =~# 'Incorrect API key',
       \ 'the error body is found when stderr is folded into stdout')
 
-for s:case in [
-      \ ['The model `x` does not exist or you do not have access to it.', 'g:air_openai_model'],
-      \ ['You exceeded your current quota, please check your plan.', 'add credits'],
-      \ ['Rate limit reached for gpt-test', 'retry shortly'],
-      \ ['Unsupported value: ''reasoning.effort'' does not support ''none''', 'g:air_openai_reasoning_effort'],
-      \ ['Unsupported parameter: ''temperature''', 'g:air_openai_params'],
-      \ ]
+for s:detail in ['Not Found', 'invalid key', 'a new provider error']
   let s:parsed = air#backend#openai#parse({'status': 22,
-        \ 'stdout': json_encode({'error': {'message': s:case[0]}}), 'stderr': ''})
-  call s:ok(s:parsed.error =~# s:case[1],
-        \ 'openai failure "' . s:case[0][0 : 20] . '..." is annotated')
+        \ 'stdout': json_encode({'error': {'message': s:detail}}), 'stderr': ''})
+  call s:eq(s:parsed.error, 'openai: ' . s:detail,
+        \ 'OpenAI error detail is preserved')
 endfor
-
-for s:case in [
-      \ ['curl: (6) Could not resolve host: api.openai.com', 'network problem'],
-      \ ['curl: (28) Operation timed out after 120002 milliseconds with 0 bytes received',
-      \  'raise g:air_timeout'],
-      \ ["curl: Variable 'OPENAI_API_KEY' import fail, not set\n"
-      \  . "curl: option --variable: variable expansion failure\n"
-      \  . "curl: try 'curl --help' for more information", 'export \$OPENAI_API_KEY'],
-      \ ["curl: option --variable: is unknown\n"
-      \  . "curl: try 'curl --help' for more information", 'curl 8.3'],
-      \ ]
-  let s:parsed = air#backend#openai#parse({'status': 2, 'stdout': '',
-        \ 'stderr': s:case[0]})
-  call s:ok(s:parsed.error =~# '^curl failed: .*' . s:case[1],
-        \ 'curl failure "' . s:case[0][0 : 20] . '..." is annotated')
-endfor
+let s:parsed = air#backend#openai#parse({'status': 28, 'stdout': '',
+      \ 'stderr': 'curl: (28) Operation timed out'})
+call s:eq(s:parsed.error, 'curl failed: curl: (28) Operation timed out',
+      \ 'curl error detail is preserved')
 
 " --- end to end through the dispatcher, with a stub curl ---
 

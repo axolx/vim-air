@@ -12,6 +12,7 @@ function! air#scope#names() abort
 endfunction
 
 " Returns {'name': ..., 'start': lnum, 'end': lnum} (1-based, inclusive).
+" REQ 2.2, REQ 2.10
 function! air#scope#resolve(name, line1, line2) abort
   let last = line('$')
 
@@ -40,6 +41,7 @@ function! air#scope#resolve(name, line1, line2) abort
 endfunction
 
 " R5.3 — contiguous non-blank block around the cursor.
+" REQ 2.4, REQ 2.5
 function! s:paragraph() abort
   let cur = line('.')
   let last = line('$')
@@ -69,6 +71,7 @@ function! s:paragraph() abort
 endfunction
 
 " R5.4 — Markdown heading through the next heading of same or higher level.
+" REQ 2.6, REQ 2.7
 function! s:section() abort
   let cur = line('.')
   let last = line('$')

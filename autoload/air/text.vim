@@ -17,6 +17,7 @@ endfunction
 " enough that they have to be scrubbed: they render as a stray glyph, they can
 " leave a first line that looks blank but is not, and a BOM in front of a code
 " fence defeats fence detection.
+" REQ 4.3, REQ 4.4
 function! air#text#strip_invisible(text) abort
   " U+FEFF is never meaningful inside a revision, so remove it everywhere.
   let t = substitute(a:text, '\%ufeff', '', 'g')
@@ -28,6 +29,7 @@ endfunction
 
 " CLI tools colour their output when they think a terminal is attached; scrub
 " escape sequences before the text is treated as a revision.
+" REQ 4.7
 function! air#text#strip_ansi(text) abort
   let t = substitute(a:text, "\e\\[[0-9;?]*[ -/]*[@-~]", '', 'g')
   let t = substitute(t, "\e\\][^\x07\e]*\\(\x07\\|\e\\\\\\)", '', 'g')
@@ -36,6 +38,7 @@ function! air#text#strip_ansi(text) abort
 endfunction
 
 " R8.1 — drop a single wrapping code fence if the model added one.
+" REQ 4.1
 function! air#text#strip_fences(lines) abort
   let lines = air#text#trim_blank_edges(a:lines)
 
@@ -65,6 +68,7 @@ endfunction
 
 " R8.2 — normalize edges to match the original region so the diff shows only
 " real changes.
+" REQ 4.2, REQ 4.5, REQ 4.6
 function! air#text#clean(text, target_lines, fileformat) abort
   let text = air#text#strip_invisible(air#text#strip_ansi(a:text))
   let lines = split(text, "\n", 1)
@@ -112,6 +116,7 @@ function! air#text#clean(text, target_lines, fileformat) abort
 endfunction
 
 " Splice revised region lines back into the full buffer (R5.2).
+" REQ 2.3
 function! air#text#splice(all_lines, start, end, lines) abort
   let before = a:start > 1 ? a:all_lines[0 : a:start - 2] : []
   let after  = a:end < len(a:all_lines) ? a:all_lines[a:end :] : []

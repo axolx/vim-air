@@ -6,6 +6,7 @@ let s:save_cpo = &cpoptions
 set cpoptions&vim
 
 " R6.3 — small default set: prose first, code second.
+" REQ 5.2, REQ 5.3
 let s:defaults = {
       \ 'tighten':    'Tighten the prose. Remove repetition and filler. Preserve my voice and meaning.',
       \ 'grammar':    'Copy edit for grammar, spelling and punctuation only. Do not change tone, voice, word choice or structure.',
@@ -20,6 +21,7 @@ let s:defaults = {
       \ }
 
 " R6.1 / R6.6 — user prompts override defaults; filetype prompts override both.
+" REQ 5.1, REQ 5.4, REQ 5.5
 function! air#prompt#named() abort
   let named = copy(s:defaults)
   call extend(named, air#get('prompts', {}))
@@ -35,6 +37,7 @@ endfunction
 
 " R6.4 — the "return only the text" instruction is load-bearing: chat-tuned
 " models otherwise narrate, apologize, or wrap output in fences.
+" REQ 6.2, REQ 6.3, REQ 6.4
 function! air#prompt#system() abort
   return air#get('system_prompt', join([
         \ 'You are a careful reviser of text and code.',
@@ -52,6 +55,7 @@ endfunction
 " R6.5 — placeholders for filetype/filename; region markers for partial scopes.
 " Returns {'system': ..., 'user': ...} — backends map that onto their own
 " request shape (Bedrock converse takes system and messages separately).
+" REQ 6.1, REQ 6.5, REQ 6.6, REQ 6.7
 function! air#prompt#compose(req) abort
   let parts = []
 
@@ -67,8 +71,11 @@ function! air#prompt#compose(req) abort
   endif
 
   let instruction = a:req.prompt
-  let instruction = substitute(instruction, '{filetype}', a:req.filetype, 'g')
-  let instruction = substitute(instruction, '{filename}', a:req.filename, 'g')
+  " Escaped: '&', '~' and '\' are special in a substitute() replacement.
+  let instruction = substitute(instruction, '{filetype}',
+        \ escape(a:req.filetype, '&~\'), 'g')
+  let instruction = substitute(instruction, '{filename}',
+        \ escape(a:req.filename, '&~\'), 'g')
 
   let whole = a:req.start == 1 && a:req.end == len(a:req.all_lines)
 
@@ -103,15 +110,9 @@ endfunction
 
 " R8a.3 — a scratch buffer, because Vim has no editable modal popup:
 " popup_create() buffers are not modifiable.
+" REQ 7.1, REQ 7.2, REQ 7.7
 function! air#prompt#open(request) abort
-  if air#get('prompt_ui', 'buffer') ==# 'input'
-    return s:open_input(a:request)
-  endif
-
-  let comment = air#get('prompt_comment', '#')
-  let height = air#get('prompt_height', 10)
-
-  execute 'botright' height 'new'
+  botright 10new
   let bufname = 'air://prompt'
   if bufexists(bufname)
     execute 'silent! bwipeout!' bufnr(bufname)
@@ -125,94 +126,34 @@ function! air#prompt#open(request) abort
   let b:air_request = a:request
   let b:air_history_idx = -1
 
-  " R8a.6 — prefill with the previous prompt, unless the request already
-  " carries prompt text.
-  let prefill = !empty(a:request.prompt)
-        \ ? a:request.prompt
-        \ : air#get('prefill_last', 1) ? air#prompt#last() : ''
-
-  let header = [
-        \ comment . ' air: describe the revision you want.',
-        \ comment . ' <CR> submit   q cancel   <C-p>/<C-n> prompt history',
-        \ comment . ' lines starting with ' . comment . ' are ignored',
-        \ comment . ' scope: ' . a:request.scope,
-        \ ]
-  call setline(1, header + split(prefill, "\n", 1))
-
-  call cursor(len(header) + 1, 1)
-  if empty(prefill)
-    startinsert
+  " R8a.6 — prefill with the previous prompt.
+  if air#get('prefill_last', 1)
+    call setline(1, split(air#prompt#last(), "\n", 1))
   endif
 endfunction
 
-" R8a.10 — single-line cmdline fallback with named-prompt completion.
-function! s:open_input(request) abort
-  let text = input('air (' . a:request.scope . '): ',
-        \ a:request.prompt, 'customlist,air#complete')
-  redraw
-  if empty(substitute(text, '\_s', '', 'g'))
-    call air#info('cancelled')
-    return
-  endif
-  let req = a:request
-  let req.prompt = text
-  call air#send(req)
-endfunction
-
-" R8a.5 / R8a.8 — strip comments, honour an edited "# scope:" directive.
+" R8a.5 — the whole buffer is the prompt.
+" REQ 7.11
 function! air#prompt#submit() abort
   if !exists('b:air_request')
     call air#error('not an air prompt buffer')
     return
   endif
 
-  let comment = air#get('prompt_comment', '#')
   let req = b:air_request
-  let lines = getline(1, '$')
-
-  let scope = req.scope
-  for l in lines
-    let m = matchstr(l, '^' . comment . '\s*scope:\s*\zs\S\+')
-    if !empty(m)
-      let scope = m
-    endif
-  endfor
-
-  let body = filter(copy(lines), 'v:val !~# "^" . comment')
-  let prompt = substitute(join(body, "\n"), '^\_s*\|\_s*$', '', 'g')
+  let prompt = substitute(join(getline(1, '$'), "\n"), '^\_s*\|\_s*$', '', 'g')
 
   if empty(prompt)
     call air#error('empty prompt')
     return
   endif
 
-  let srcbuf = req.srcbuf
   close
-
-  " Re-resolve the scope if the user edited the directive.
-  if scope !=# req.scope
-    let win = bufwinnr(srcbuf)
-    if win == -1
-      call air#error('source buffer is no longer visible')
-      return
-    endif
-    execute win . 'wincmd w'
-    try
-      let region = air#scope#resolve(scope, 0, 0)
-    catch /^air:/
-      call air#error(substitute(v:exception, '^air:\s*', '', ''))
-      return
-    endtry
-    let req.scope = region.name
-    let req.start = region.start
-    let req.end = region.end
-    let req.all_lines = getbufline(srcbuf, 1, '$')
-  endif
-
   let req.prompt = prompt
   call air#send(req)
 endfunction
 
+" REQ 7.6
 function! air#prompt#cancel() abort
   close
   call air#info('cancelled')
@@ -220,6 +161,7 @@ endfunction
 
 " ------------------------------------------------------------- history ------
 
+" REQ 8.1, REQ 13.2
 function! s:history_file() abort
   let default = (has('nvim') ? stdpath('cache') : expand('~/.cache/vim'))
         \ . '/air-history.jsonl'
@@ -227,6 +169,7 @@ function! s:history_file() abort
 endfunction
 
 " R8a.7 — persist prompts across sessions.
+" REQ 8.1, REQ 8.2, REQ 8.3, REQ 8.5
 function! air#prompt#remember(prompt) abort
   if !air#get('history', 1) || empty(a:prompt)
     return
@@ -270,6 +213,7 @@ function! air#prompt#last() abort
 endfunction
 
 " <C-p>/<C-n> inside the prompt buffer.
+" REQ 8.4
 function! air#prompt#recall(delta) abort
   let hist = air#prompt#history()
   if empty(hist)
@@ -286,11 +230,8 @@ function! air#prompt#recall(delta) abort
   let idx = max([0, min([len(hist) - 1, idx])])
   let b:air_history_idx = idx
 
-  let comment = air#get('prompt_comment', '#')
-  let header = filter(getline(1, '$'), 'v:val =~# "^" . comment')
   silent %delete _
-  call setline(1, header + split(hist[idx], "\n", 1))
-  call cursor(len(header) + 1, 1)
+  call setline(1, split(hist[idx], "\n", 1))
 endfunction
 
 let &cpoptions = s:save_cpo

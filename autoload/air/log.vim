@@ -7,6 +7,7 @@ set cpoptions&vim
 
 let s:log = []
 
+" REQ 15.3
 function! air#log#add(msg) abort
   call add(s:log, strftime('%H:%M:%S') . ' ' . a:msg)
   let max = air#get('log_size', 50)
@@ -23,6 +24,7 @@ function! air#log#clear() abort
   let s:log = []
 endfunction
 
+" REQ 15.2
 function! air#log#show() abort
   if empty(s:log)
     call air#info('log is empty')
@@ -45,7 +47,6 @@ function! air#log#show() abort
   endfor
   call setline(1, lines)
   setlocal nomodifiable
-  nnoremap <buffer> <silent> q :close<CR>
   keepjumps normal! G
 endfunction
 

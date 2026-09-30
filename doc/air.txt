@@ -86,9 +86,11 @@ Then review: >
 
     ]c      next change
     [c      previous change
-    do      take the proposed hunk
-    dp      push your version over the proposal
+    do      take the proposed hunk (from your buffer)
+    dp      send the proposed hunk to your buffer (from the proposal)
     :AirClose
+
+A hunk you skip leaves your text unchanged.
 
 ==============================================================================
 4. COMMANDS                                                  *air-commands*
@@ -109,9 +111,6 @@ Then review: >
 
         [options] may be:
             -scope={name}   override the scope, see |air-scopes|
-            -model={model}  override the model for this call
-            -f {path}       read the prompt from a file
-            -f={path}       same
 
                                         *:AirBuffer* *:AirParagraph* *:AirSection*
 :AirBuffer [options] [prompt]
@@ -121,13 +120,18 @@ Then review: >
 
                                                                 *:AirAbort*
 :AirAbort
-        Cancel the request in flight.
+        Cancel the request in flight. Only one request runs at a time; |:Air|
+        refuses another until this one finishes or is aborted. A blocking
+        request (|g:air_async| off, or no job support) cannot be cancelled.
 
                                                                 *:AirClose*
 :AirClose
         Close the proposal window, run |:diffoff| on the source window and
-        restore the window options and 'diffopt' that were changed for the
-        session. Works from either side of the diff.
+        restore the window options, window sizes and 'diffopt' that were
+        changed for the session. Works from any window, including one in
+        another tab. Closing the proposal with |:quit| or |:bwipeout|
+        restores them too. Only one review exists across the editor; a new
+        proposal closes the previous review.
 
                                                                   *:AirLog*
 :AirLog
@@ -142,13 +146,16 @@ contains the entire buffer with only that region replaced, so hunk-by-hunk
 merging works normally.
 
 buffer      The whole buffer. Default.
-range       The given [range], or the visual selection.
+range       The given [range], or the visual selection. With neither, the
+            cursor line.
 paragraph   The contiguous non-blank block around the cursor. From a blank
             line, the next paragraph forward.
 section     A Markdown heading through the next heading of the same or a
             higher level. Deeper subsections are included. With no heading
-            above the cursor, falls back to the whole buffer.
-motion      The region covered by an operator; see |<Plug>AirMotion|.
+            above the cursor, falls back to the whole buffer. Only "#"
+            headings count, and a "#" line inside a fenced code block is
+            taken for one; underlined headings are not recognized.
+motion      The lines covered by an operator; see |<Plug>AirMotion|.
 
 ==============================================================================
 6. THE PROMPT BUFFER                                    *air-prompt-buffer*
@@ -166,16 +173,13 @@ Default mappings inside it:
     <C-p>       recall an older prompt
     <C-n>       recall a newer prompt
 
-Lines starting with 'g:air_prompt_comment' (default "#") are ignored, like a
-git commit message. One comment line is a directive: >
+Everything in the buffer is sent as the prompt. The scope is fixed when the
+buffer opens; cancel and rerun |:Air| to change it.
 
-    # scope: paragraph
-
-Edit it before submitting to change the scope without starting over.
-
-Set |g:air_prompt_ui| to "input" if you would rather answer a one-line
-|input()| prompt with named-prompt completion.
-
+To reuse a prompt file, read it into a register with Vim: >
+    :let @p = join(readfile("prompts/copyedit.md"), "\n")
+    :Air @p
+<
 ==============================================================================
 7. NAMED PROMPTS                                        *air-named-prompts*
 
@@ -192,21 +196,25 @@ Named prompts are reusable instructions. These ship by default:
     modernize   modernize code, preserve behaviour
     refactor    simplify code, preserve behaviour and interface
 
+                                                            *g:air_prompts*
 Add your own, overriding defaults by name: >
 
     let g:air_prompts = {
       \ 'mcphee': 'Rewrite in the voice of John McPhee. Keep every fact.',
       \ 'tighten': 'Cut 20% of the words without losing meaning.',
       \ }
-
+<
+                                                         *g:air_ft_prompts*
 Per-filetype prompts take precedence over both: >
 
     let g:air_ft_prompts = {
       \ 'markdown': {'links': 'Check every link is described by its text.'},
       \ 'go':       {'docs':  'Add godoc comments to exported symbols.'},
       \ }
-
-Prompts may use the {filetype} and {filename} placeholders.
+<
+Prompts may use the {filetype} and {filename} placeholders, which are replaced
+with the source buffer's 'filetype' and file name. Named prompts complete on
+the |:Air| command line.
 
 ==============================================================================
 8. REVIEWING A PROPOSAL                                        *air-review*
@@ -216,9 +224,19 @@ when closed, and it is 'nomodifiable' unless |g:air_modifiable| is set. It
 inherits the source buffer's 'filetype', 'fileformat' and 'fileencoding' so
 syntax highlighting and diffing behave.
 
-Review with the native diff commands: |]c| |[c| |do| |dp| |:diffget|
-|:diffput|. Your source buffer is a normal buffer throughout, so |u| works as
-always.
+Move between changes with |]c| and |[c|. Take a hunk with |do| in your
+buffer or |dp| in the proposal; only your source buffer needs to be
+modifiable. A hunk you skip leaves your text unchanged. Your source buffer is
+a normal buffer throughout, so |u| works as always.
+
+The proposal always opens in a vertical split beside the source window, with
+the cursor on the first change. While a proposal is open, "q" in it runs
+|:AirClose| (see |g:air_proposal_maps|).
+
+If the source has changed since the request was composed, including while you
+were writing the prompt, the response is discarded and you are asked to run
+|:Air| again. If the source buffer is not visible in the current tab page
+when the response arrives, no proposal opens.
 
 If the response is identical to your text, no split opens and vim-air reports
 "no changes proposed".
@@ -236,22 +254,22 @@ no default. Ignored by the OpenAI backend.
 On-demand access to many models needs the regional inference-profile prefix
 ("us.", "eu.", "apac."). >
     let g:air_model = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
-
+<
                                                             *g:air_aws_cmd*
 The AWS CLI executable. Default "aws". >
     let g:air_aws_cmd = '/usr/local/bin/aws'
-
+<
                                   *g:air_aws_profile* *g:air_aws_region*
 Passed to the CLI as --profile and --region when set. Empty means the CLI
 resolves them from your environment and config as usual. >
     let g:air_aws_profile = 'work'
     let g:air_aws_region = 'us-east-1'
-
+<
                                                            *g:air_aws_args*
 Extra arguments appended to the aws invocation, for anything vim-air does not
 model directly. >
     let g:air_aws_args = ['--cli-read-timeout', '0']
-
+<
                               *g:air_max_tokens* *g:air_temperature* *g:air_top_p*
 Bedrock inference configuration. Only maxTokens is sent by default (8192);
 temperature and topP are omitted unless you set them.
@@ -261,11 +279,11 @@ reasoning models, reject temperature with a ValidationException saying it is
 deprecated. Set it only if your model accepts it. >
     let g:air_max_tokens = 16384
     let g:air_temperature = 0.2
-
+<
                                                    *g:air_inference_config*
 Merged over the above, for any other InferenceConfiguration field. >
     let g:air_inference_config = {'stopSequences': ['<<<END>>>']}
-
+<
                                                               *g:air_async*
 Run the backend asynchronously via |job_start()| or jobstart(). Default 1.
 Falls back to a blocking |system()| call when jobs are unavailable.
@@ -279,39 +297,33 @@ too; the Bedrock backend relies on the AWS CLI's own timeouts there.
                                                     *g:air_max_input_bytes*
 Confirm before sending more than this many bytes. Default 100000.
 
-                                                  *g:air_cleanup_tempfiles*
-Delete the request JSON files after each call. Default 1. Set to 0 to inspect
-exactly what was sent to Bedrock.
-
-                                                              *g:air_split*
-"vertical" (default) or "horizontal".
-
                                                             *g:air_diffopt*
 'diffopt' value for the duration of a session, restored on |:AirClose|.
-Default "internal,filler,algorithm:patience". Empty leaves 'diffopt' alone.
+Default "internal,filler,algorithm:patience,inline:word": patience hunks,
+with the changed words highlighted inside each changed line. Items this Vim
+does not support (inline:word needs Vim 9.1.1243 or later) are dropped.
+Empty leaves 'diffopt' alone.
 
                                                         *g:air_modifiable*
 Allow editing the proposal before merging. Default 0.
 
                                                       *g:air_default_scope*
-Scope for |:Air| without a range. Default "buffer".
+Scope for |:Air| without a range: "buffer" (the default), "paragraph" or
+"section". See |air-scopes|.
 
-                                                          *g:air_prompt_ui*
-"buffer" (default) or "input". See |air-prompt-buffer|.
-
-                     *g:air_prompt_height* *g:air_prompt_comment* *g:air_prefill_last*
-Prompt buffer height (default 10), comment prefix (default "#"), and whether
-to prefill the previous prompt (default 1).
+                                                      *g:air_prefill_last*
+Whether to prefill the prompt buffer with the previous prompt. Default 1.
 
                             *g:air_history* *g:air_history_file* *g:air_history_size*
 Prompt history: enabled (default 1), storage path (default
-~/.cache/vim/air-history.jsonl, or |stdpath()| cache in Neovim), and how many
-prompts to keep (default 200).
+~/.cache/vim/air-history.jsonl, or air-history.jsonl in stdpath('cache') in
+Neovim), and how many prompts to keep (default 200). A prompt is recorded
+when its request is sent; a repeated prompt moves to the newest position.
 
                                                       *g:air_system_prompt*
-The instruction that forces plain-text-only output, sent as the Bedrock system
-field, or as the OpenAI "instructions". Override with care: chat-tuned models otherwise narrate their changes,
-which corrupts the diff.
+The instruction that forces plain-text-only output, sent as the Bedrock
+system field or as the OpenAI "instructions". Override with care: chat-tuned
+models otherwise narrate their changes, which corrupts the diff.
 
                                                        *g:air_proposal_maps*
 Map "q" to |:AirClose| in the proposal buffer. Default 1.
@@ -319,13 +331,25 @@ Map "q" to |:AirClose| in the proposal buffer. Default 1.
                                                            *g:air_log_size*
 Log entries to retain. Default 50.
 
-Every option can be set buffer-locally with a b: prefix, e.g.
-b:air_model.
+Removed configuration: g:air_prompt_ui, g:air_split and g:air_openai_params
+are ignored. Use the prompt buffer, a vertical split and
+|g:air_openai_max_output_tokens|. The removed -model= and -f command options
+report an unknown option. Configure the backend model and use a register for
+prompt files.
 
 ==============================================================================
 10. MAPPINGS                                                 *air-mappings*
 
-vim-air defines no default mappings. |<Plug>| mappings are provided: >
+vim-air defines no default mappings. These |<Plug>| mappings are provided:
+
+    <Plug>AirRevise      |:Air| (normal), or |:Air| on the selection (visual)
+    <Plug>AirParagraph   |:AirParagraph|
+    <Plug>AirSection     |:AirSection|
+    <Plug>AirMotion      operator, see below
+    <Plug>AirClose       |:AirClose|
+    <Plug>AirAbort       |:AirAbort|
+
+For example: >
 
     nmap <Leader>ar <Plug>AirRevise
     xmap <Leader>ar <Plug>AirRevise
@@ -333,12 +357,14 @@ vim-air defines no default mappings. |<Plug>| mappings are provided: >
     nmap <Leader>as <Plug>AirSection
     nmap <Leader>am <Plug>AirMotion
     nmap <Leader>aq <Plug>AirClose
-
+<
                                                           *<Plug>AirMotion*
-An operator. It prompts for the region you move over: >
+An operator: it revises the lines covered by the motion or text object that
+follows, then opens the |air-prompt-buffer| for the instruction. >
 
     <Leader>amip     revise the inner paragraph
     <Leader>amaf     revise a function, with a filetype text object plugin
+<
 
 ==============================================================================
 11. BACKENDS                                                 *air-backends*
@@ -370,7 +396,9 @@ With nothing else set, requests use gpt-6-luna at low reasoning effort.
 vim-air never reads the key. curl imports it from the environment
 (--variable) and expands it into the Authorization header (--expand-header),
 so it never appears in argv, in a temp file, or in |:AirLog|. The request body
-goes over curl's stdin, and is sent with "store": false.
+goes over curl's stdin, and is sent with "store": false. (In Vim's blocking
+fallback, |system()| itself passes stdin through a temporary file, which holds
+the request body but never the key.)
 
 Verify the plumbing outside Vim first: >
 
@@ -381,36 +409,33 @@ Verify the plumbing outside Vim first: >
 <
 A response cut short by max_output_tokens raises the same "truncated"
 warning as Bedrock's max_tokens. |g:air_max_tokens| and the other Bedrock
-inference settings do not apply; use |g:air_openai_params|.
+inference settings do not apply; use |g:air_openai_max_output_tokens|.
 
                                                           *g:air_openai_model*
 The model to use. Default "gpt-6-luna". |g:air_model| is not consulted, since
-it usually holds a Bedrock ID; the -model= option of |:Air| still overrides
-this per request. >
+it usually holds a Bedrock ID. >
     let g:air_openai_model = 'gpt-6.1-sol'
-
+<
                                                *g:air_openai_reasoning_effort*
 Sent as reasoning.effort, e.g. "low", "medium" or "high". Default "low":
 prose revisions rarely need much reasoning, and lower effort is faster and
 cheaper. Set it to '' to omit it and use the model's default. >
     let g:air_openai_reasoning_effort = 'medium'
-
-                                                         *g:air_openai_params*
-A dictionary merged into the request body, for anything vim-air does not model
-directly. It overrides the fields vim-air sets. >
-    let g:air_openai_params = {'max_output_tokens': 16000,
-          \ 'text': {'verbosity': 'low'}}
-
+<
+                                              *g:air_openai_max_output_tokens*
+Maximum output tokens, including reasoning tokens. Default 8192. >
+    let g:air_openai_max_output_tokens = 16000
+<
                                                        *g:air_openai_base_url*
 The API root; "/responses" is appended. Default "https://api.openai.com/v1".
 Point it at a proxy or any Responses-compatible endpoint. >
     let g:air_openai_base_url = 'http://localhost:8080/v1'
-
+<
                                                     *g:air_openai_api_key_env*
 The name of the environment variable holding the API key. Default
 "OPENAI_API_KEY". >
     let g:air_openai_api_key_env = 'AIR_OPENAI_KEY'
-
+<
                                                               *g:air_curl_cmd*
 The curl executable. Default "curl".
 
@@ -438,14 +463,14 @@ transports, timeouts, aborting, temp-file cleanup and logging.
             stdin         string, optional
             cleanup       list of files to delete afterwards, optional
             cleanup_dirs  list of directories to delete afterwards, optional
-        {payload} is {'system': ..., 'user': ...}. {opts} carries per-request
-        overrides such as {'model': ...}.
+        {payload} is {'system': ..., 'user': ...}. {opts} is currently empty
+        and reserved for future backend options.
 
     air#backend#{name}#parse({result}) -> dict
         Maps {'status': exit code, 'stdout': ..., 'stderr': ...} onto
         {'ok': 0|1, 'text': ..., 'error': ..., 'warning': ...}.
-        Backends own their own error mapping, so provider-specific advice stays
-        with the provider.
+        Backends extract provider error text; vim-air displays it on one line
+        and keeps the full output in |:AirLog|.
 
 A backend must be a real file: Vim raises E746 if an autoload-named function is
 defined in a script whose path does not match.
@@ -465,7 +490,7 @@ Note the capital: legacy Vim raises E704 for a lowercase variable holding a
 |Funcref|. A function name as a string works with either case: >
 
     let g:air_backend = 'MyBackend'
-
+<
                                                       *g:Air_output_filter*
 Post-process the model's text before it is treated as the revision. >
 
@@ -505,7 +530,20 @@ and stderr.
     |g:air_openai_reasoning_effort|.
 
 "no model set"
-    Set |g:air_model|. There is deliberately no default.
+    On Bedrock, set |g:air_model|; there is deliberately no default. On
+    OpenAI, |g:air_openai_model| was set to ''; unset it or name a model.
+
+"a request is already in flight"
+    Only one request runs at a time. Wait for it, or cancel it with
+    |:AirAbort|.
+
+"source buffer changed; run :Air again"
+    You edited the source after the request was composed, so the response
+    no longer lines up with your text. Run |:Air| again.
+
+"source buffer is no longer visible"
+    The response arrived while the source buffer was not shown in the
+    current tab page. Show it and run |:Air| again.
 
 "Unable to locate credentials" / "ExpiredToken"
     Refresh credentials the way you normally do (often "aws sso login"), or
@@ -542,7 +580,9 @@ The proposal contains commentary, not just the revised text
     output with |g:Air_output_filter|.
 
 The diff is one enormous hunk
-    Your text is probably one long line per paragraph. Vim diffs by line. Try
-    one sentence per line for prose, or add "iwhite" to |g:air_diffopt|.
+    Your text is probably one long line per paragraph. Vim diffs by line, so
+    |do| and |dp| move whole lines; the default |g:air_diffopt| highlights the
+    changed words within them. Try one sentence per line for prose, or add
+    "iwhite" to |g:air_diffopt|.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

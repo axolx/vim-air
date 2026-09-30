@@ -14,7 +14,7 @@
 "         cleanup      (list, optional) files to delete when done
 "         cleanup_dirs (list, optional) directories to delete when done
 "       {payload} is {'system': ..., 'user': ...}.
-"       {opts} carries per-request overrides such as {'model': ...}.
+"       {opts} is reserved for future backend options.
 "
 "   air#backend#foo#parse({result}) -> dict
 "       Turns the finished process into a result. {result} is
@@ -31,12 +31,14 @@ scriptencoding utf-8
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 
+" REQ 9.5, REQ 9.8
 let s:job = v:null
 let s:timer = -1
 let s:ctx = {}
 
 let s:default_backend = 'bedrock'
 
+" REQ 9.1
 function! air#backend#name() abort
   return air#get('backend_name', s:default_backend)
 endfunction
@@ -54,9 +56,11 @@ function! s:fn(name, method) abort
 endfunction
 
 " Resolve a backend, verifying it implements the interface.
+" REQ 9.3, REQ 9.4
 function! air#backend#resolve(name) abort
   if a:name !~# '^\w\+$'
-    throw 'air: invalid backend name "' . a:name . '"'
+    throw 'air: invalid backend name "' . a:name . '" (available: '
+          \ . join(air#backend#available(), ', ') . ')'
   endif
 
   " exists('*autoload#fn') does not trigger autoloading, so source the file.
@@ -89,11 +93,14 @@ endfunction
 
 " a:payload is {'system': ..., 'user': ...}
 " a:Cb receives {'ok': 0|1, 'text': ..., 'error': ..., 'raw': ...}
+" Returns 1 once the request is dispatched, 0 if it was refused first.
+" REQ 9.2, REQ 9.6, REQ 9.7, REQ 10.6
 function! air#backend#run(payload, opts, Cb) abort
   " R7.7 / R10.3 — tests and alternative transports replace this one function.
   let Override = air#hook('backend')
   if Override isnot v:null
-    return call(Override, [a:payload, a:opts, a:Cb])
+    call call(Override, [a:payload, a:opts, a:Cb])
+    return 1
   endif
 
   try
@@ -129,17 +136,17 @@ function! air#backend#run(payload, opts, Cb) abort
 
   call air#log#add('exec: ' . join(request.argv, ' '))
 
-  if s:async_available()
-    call s:run_async(backend, request, a:Cb)
-  else
-    call s:run_sync(backend, request, a:Cb)
-  endif
+  return s:async_available()
+        \ ? s:run_async(backend, request, a:Cb)
+        \ : s:run_sync(backend, request, a:Cb)
 endfunction
 
 function! s:fail(Cb, error) abort
-  return call(a:Cb, [{'ok': 0, 'text': '', 'raw': '', 'error': a:error}])
+  call call(a:Cb, [{'ok': 0, 'text': '', 'raw': '', 'error': a:error}])
+  return 0
 endfunction
 
+" REQ 10.1, REQ 10.2, REQ 13.2
 function! s:async_available() abort
   if !air#get('async', 1)
     return 0
@@ -150,6 +157,7 @@ endfunction
 " ------------------------------------------------------------------ sync -----
 
 " R7.18 — blocking fallback when jobs are unavailable.
+" REQ 10.2, REQ 10.8
 function! s:run_sync(backend, request, Cb) abort
   let cmd = join(map(copy(a:request.argv), 'shellescape(v:val)'), ' ')
   let out = empty(a:request.stdin) ? system(cmd) : system(cmd, a:request.stdin)
@@ -158,10 +166,12 @@ function! s:run_sync(backend, request, Cb) abort
   " it as stderr as well, where a backend's error mapping expects it.
   let err = v:shell_error != 0 ? out : ''
   call s:finish(a:backend, a:request, a:Cb, v:shell_error, out, err)
+  return 1
 endfunction
 
 " ----------------------------------------------------------------- async -----
 
+" REQ 10.1, REQ 10.3
 function! s:run_async(backend, request, Cb) abort
   let s:ctx = {'out': [], 'err': [], 'cb': a:Cb, 'done': 0,
         \ 'backend': a:backend, 'request': a:request}
@@ -176,8 +186,9 @@ function! s:run_async(backend, request, Cb) abort
           \ })
     if s:job <= 0
       let s:job = v:null
-      return s:finish(a:backend, a:request, a:Cb, 1, '',
+      call s:finish(a:backend, a:request, a:Cb, 1, '',
             \ 'failed to start ' . a:request.argv[0])
+      return 0
     endif
     if !empty(a:request.stdin)
       call chansend(s:job, a:request.stdin)
@@ -197,8 +208,9 @@ function! s:run_async(backend, request, Cb) abort
     let s:job = job_start(a:request.argv, options)
     if job_status(s:job) !=# 'run'
       let s:job = v:null
-      return s:finish(a:backend, a:request, a:Cb, 1, '',
+      call s:finish(a:backend, a:request, a:Cb, 1, '',
             \ 'failed to start ' . a:request.argv[0])
+      return 0
     endif
     if !empty(a:request.stdin)
       call ch_sendraw(s:job, a:request.stdin)
@@ -211,6 +223,7 @@ function! s:run_async(backend, request, Cb) abort
   if timeout > 0
     let s:timer = timer_start(timeout * 1000, function('s:on_timeout'))
   endif
+  return 1
 endfunction
 
 function! s:vim_out(ch, msg) abort
@@ -248,6 +261,7 @@ function! s:async_finish(status) abort
         \ join(s:ctx.out, ''), join(s:ctx.err, ''))
 endfunction
 
+" REQ 10.3
 function! s:on_timeout(timer) abort
   if s:job is v:null
     return
@@ -265,6 +279,7 @@ function! s:cancel_timer() abort
 endfunction
 
 " R4.8 — cancel an in-flight request.
+" REQ 10.4
 function! air#backend#abort() abort
   if s:job is v:null
     return 0
@@ -281,8 +296,9 @@ function! air#backend#abort() abort
   return 1
 endfunction
 
+" REQ 10.5
 function! s:cleanup(request) abort
-  if empty(a:request) || !air#get('cleanup_tempfiles', 1)
+  if empty(a:request)
     return
   endif
   for path in get(a:request, 'cleanup', [])
@@ -295,6 +311,7 @@ endfunction
 
 " ---------------------------------------------------------------- result -----
 
+" REQ 4.9
 function! s:finish(backend, request, Cb, status, out, err) abort
   call s:cleanup(a:request)
 

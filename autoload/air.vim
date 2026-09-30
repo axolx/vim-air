@@ -9,14 +9,16 @@ set cpoptions&vim
 
 " R9.1 — every setting has a default. The only required configuration is
 " g:air_model, since Bedrock model IDs are account- and region-specific.
+" REQ 14.4
 function! air#get(name, default) abort
-  return get(b:, 'air_' . a:name, get(g:, 'air_' . a:name, a:default))
+  return get(g:, 'air_' . a:name, a:default)
 endfunction
 
 " Legacy Vim refuses `let g:air_backend = function(...)` with E704: a variable
 " holding a Funcref must start with a capital. So overridable hooks are looked
 " up as either g:Air_<name> (a Funcref) or g:air_<name> (a function-name
 " string). Returns v:null when unset.
+" REQ 14.5
 function! air#hook(name) abort
   if has_key(g:, 'Air_' . a:name)
     return get(g:, 'Air_' . a:name)
@@ -28,10 +30,11 @@ function! air#hook(name) abort
   return v:null
 endfunction
 
+" REQ 15.1
 function! air#error(msg) abort
   call air#log#add('ERROR: ' . a:msg)
   echohl ErrorMsg
-  echomsg 'air: ' . a:msg
+  echomsg 'air: ' . substitute(a:msg, '\_s\+', ' ', 'g')
   echohl None
 endfunction
 
@@ -50,10 +53,10 @@ endfunction
 
 " ------------------------------------------------------------ arg parsing ----
 
-" Accepts: literal prompt, named prompt, @register (R8a.9), -f PATH (R8a.9),
-" -scope=NAME, -model=NAME.
+" Accepts literal and named prompts, @register, and -scope=NAME.
+" REQ 1.3, REQ 1.4, REQ 1.5, REQ 1.8, REQ 1.11
 function! air#parse_args(args) abort
-  let out = {'prompt': '', 'scope': '', 'model': '', 'source': 'literal'}
+  let out = {'prompt': '', 'scope': '', 'source': 'literal'}
   let rest = a:args
 
   while rest =~# '^\s*-'
@@ -61,20 +64,6 @@ function! air#parse_args(args) abort
     let tok = matchstr(rest, '^\S\+')
     if tok =~# '^-scope='
       let out.scope = tok[7:]
-    elseif tok =~# '^-model=' || tok =~# '^-m='
-      let out.model = matchstr(tok, '=\zs.*')
-    elseif tok ==# '-f' || tok ==# '-file'
-      let rest = substitute(rest, '^\S\+\s*', '', '')
-      let path = matchstr(rest, '^\S\+')
-      if empty(path)
-        throw 'air: -f requires a path'
-      endif
-      let out.prompt = s:read_file(path)
-      let out.source = 'file'
-      let tok = path
-    elseif tok =~# '^-f=' || tok =~# '^-file='
-      let out.prompt = s:read_file(matchstr(tok, '=\zs.*'))
-      let out.source = 'file'
     else
       throw 'air: unknown option ' . tok
     endif
@@ -83,12 +72,8 @@ function! air#parse_args(args) abort
 
   let rest = substitute(rest, '^\s*\|\s*$', '', 'g')
 
-  if out.source ==# 'file'
-    return out
-  endif
-
   if rest =~# '^@.$'
-    let out.prompt = s:register_text(rest[1])
+    let out.prompt = substitute(getreg(rest[1]), '\n\+$', '', '')
     let out.source = 'register'
   elseif !empty(rest) && has_key(air#prompt#named(), rest)
     let out.prompt = air#prompt#named()[rest]
@@ -101,32 +86,18 @@ function! air#parse_args(args) abort
   return out
 endfunction
 
-function! s:read_file(path) abort
-  let path = expand(a:path)
-  if !filereadable(path)
-    throw 'air: cannot read prompt file ' . path
-  endif
-  return join(readfile(path), "\n")
-endfunction
-
-function! s:register_text(reg) abort
-  let val = getreg(a:reg)
-  if empty(val)
-    throw 'air: register @' . a:reg . ' is empty'
-  endif
-  return substitute(val, '\n\+$', '', '')
-endfunction
-
+" REQ 1.9
 function! air#complete(arglead, cmdline, cursorpos) abort
   let cands = keys(air#prompt#named())
         \ + ['-scope=buffer', '-scope=range', '-scope=paragraph',
-        \    '-scope=section', '-scope=motion', '-f', '-model=']
+        \    '-scope=section', '-scope=motion']
   return sort(filter(cands, 'stridx(v:val, a:arglead) == 0'))
 endfunction
 
 " --------------------------------------------------------------- entry ------
 
 " R4.1 — build the request, then either submit or open the prompt buffer.
+" REQ 1.1, REQ 1.2, REQ 2.1
 function! air#revise(scope_hint, line1, line2, args) abort
   try
     let parsed = air#parse_args(a:args)
@@ -164,19 +135,21 @@ function! air#request(region, parsed) abort
         \ 'end':       a:region.end,
         \ 'all_lines': getbufline(bufnr, 1, '$'),
         \ 'prompt':    a:parsed.prompt,
-        \ 'model':     a:parsed.model,
+        \ 'changedtick': getbufvar(bufnr, 'changedtick'),
         \ 'filetype':  getbufvar(bufnr, '&filetype'),
         \ 'filename':  expand('%:t'),
         \ }
 endfunction
 
 " R5.5 — operator form, uses the '[ '] marks set by g@.
+" REQ 2.8
 function! air#motion(type) abort
   call air#revise('motion', line("'["), line("']"), '')
 endfunction
 
 " --------------------------------------------------------------- sending ----
 
+" REQ 8.1, REQ 10.7, REQ 10.9
 function! air#send(request) abort
   let req = a:request
   let req.target_lines = req.all_lines[req.start - 1 : req.end - 1]
@@ -192,21 +165,22 @@ function! air#send(request) abort
     endif
   endif
 
-  call air#prompt#remember(req.prompt)
   let payload = air#prompt#compose(req)
   call air#log#add('--- request (backend=' . air#backend#name()
         \ . ' scope=' . req.scope
         \ . ' lines ' . req.start . '-' . req.end . ") ---\n"
         \ . payload.system . "\n\n" . payload.user)
 
-  let s:request = req
   call air#info('revising ' . req.scope . ' ('
         \ . (req.end - req.start + 1) . ' lines)…')
 
-  call air#backend#run(payload, {'model': req.model},
-        \ function('s:on_response', [req]))
+  " Only prompts that were actually sent are worth recalling.
+  if air#backend#run(payload, {}, function('s:on_response', [req]))
+    call air#prompt#remember(req.prompt)
+  endif
 endfunction
 
+" REQ 4.8
 function! s:on_response(req, result) abort
   call air#log#add('--- response (ok=' . a:result.ok . ") ---\n"
         \ . get(a:result, 'raw', ''))

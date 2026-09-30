@@ -20,18 +20,19 @@ let s:default_model = 'gpt-6-luna'
 let s:default_effort = 'low'
 let s:default_base_url = 'https://api.openai.com/v1'
 
+" REQ 12.3, REQ 12.4
 function! air#backend#openai#cmd() abort
   return air#get('curl_cmd', 'curl')
 endfunction
 
-" R7.24 — per-call model wins, then g:air_openai_model, then the built-in
-" default. g:air_model is not consulted: it holds a Bedrock model ID for most
-" users.
-function! air#backend#openai#model(opts) abort
-  let model = get(a:opts, 'model', '')
-  return !empty(model) ? model : air#get('openai_model', s:default_model)
+" R7.24 — use g:air_openai_model or the built-in default.
+" g:air_model is reserved for Bedrock.
+" REQ 12.9, REQ 12.10
+function! air#backend#openai#model() abort
+  return air#get('openai_model', s:default_model)
 endfunction
 
+" REQ 12.11
 function! air#backend#openai#reasoning_effort() abort
   return air#get('openai_reasoning_effort', s:default_effort)
 endfunction
@@ -40,6 +41,7 @@ function! air#backend#openai#key_env() abort
   return air#get('openai_api_key_env', 'OPENAI_API_KEY')
 endfunction
 
+" REQ 12.14
 function! air#backend#openai#url() abort
   let base = air#get('openai_base_url', s:default_base_url)
   return substitute(base, '/\+$', '', '') . '/responses'
@@ -47,6 +49,7 @@ endfunction
 
 " ----------------------------------------------------------------- check -----
 
+" REQ 12.5, REQ 12.21, REQ 12.22
 function! air#backend#openai#check() abort
   let cmd = air#backend#openai#cmd()
   if !executable(cmd)
@@ -63,7 +66,7 @@ function! air#backend#openai#check() abort
           \ . 'starting Vim (see :help air-backend-openai)'
   endif
 
-  if empty(air#backend#openai#model({}))
+  if empty(air#backend#openai#model())
     return 'no model set — e.g. let g:air_openai_model = '
           \ . "'" . s:default_model . "'"
   endif
@@ -73,8 +76,9 @@ endfunction
 
 " --------------------------------------------------------------- request -----
 
-function! air#backend#openai#body(payload, opts) abort
-  let model = air#backend#openai#model(a:opts)
+" REQ 6.1, REQ 12.2, REQ 12.6, REQ 12.12, REQ 12.13
+function! air#backend#openai#body(payload) abort
+  let model = air#backend#openai#model()
   if empty(model)
     throw 'air: no OpenAI model set (g:air_openai_model)'
   endif
@@ -85,6 +89,7 @@ function! air#backend#openai#body(payload, opts) abort
         \ 'instructions': a:payload.system,
         \ 'input': a:payload.user,
         \ 'store': v:false,
+        \ 'max_output_tokens': air#get('openai_max_output_tokens', 8192),
         \ }
 
   let effort = air#backend#openai#reasoning_effort()
@@ -92,12 +97,12 @@ function! air#backend#openai#body(payload, opts) abort
     let body.reasoning = {'effort': effort}
   endif
 
-  " Escape hatch for anything else the Responses API accepts.
-  return extend(body, air#get('openai_params', {}))
+  return body
 endfunction
 
 " R7.21 / R7.23 — POST /v1/responses. The body goes over stdin: documents
 " routinely exceed ARG_MAX, and stdin needs no temp file.
+" REQ 12.1, REQ 12.4, REQ 12.6, REQ 12.7, REQ 12.8, REQ 12.15
 function! air#backend#openai#request(payload, opts) abort
   let env = air#backend#openai#key_env()
 
@@ -120,7 +125,7 @@ function! air#backend#openai#request(payload, opts) abort
 
   return {
         \ 'argv': argv,
-        \ 'stdin': json_encode(air#backend#openai#body(a:payload, a:opts)),
+        \ 'stdin': json_encode(air#backend#openai#body(a:payload)),
         \ }
 endfunction
 
@@ -134,17 +139,18 @@ endfunction
 " HTTP errors arrive (thanks to --fail-with-body) as a non-zero exit with
 "   {"error":{"message":"...","type":"...","code":"..."}}
 " on stdout.
+" REQ 12.16, REQ 12.17, REQ 12.18, REQ 12.20
 function! air#backend#openai#parse(result) abort
   let resp = s:decode(a:result.stdout)
 
   if a:result.status != 0
     let detail = s:error_message(resp)
     if !empty(detail)
-      return {'ok': 0, 'text': '', 'error': 'openai: ' . s:humanize(detail)}
+      return {'ok': 0, 'text': '', 'error': 'openai: ' . detail}
     endif
     return {'ok': 0, 'text': '',
-          \ 'error': 'curl failed: ' . s:humanize(s:last_line(a:result.stderr,
-          \ 'exit status ' . a:result.status))}
+          \ 'error': 'curl failed: ' . s:last_line(a:result.stderr,
+          \ 'exit status ' . a:result.status)}
   endif
 
   if type(resp) != type({})
@@ -155,7 +161,7 @@ function! air#backend#openai#parse(result) abort
 
   let detail = s:error_message(resp)
   if !empty(detail)
-    return {'ok': 0, 'text': '', 'error': 'openai: ' . s:humanize(detail)}
+    return {'ok': 0, 'text': '', 'error': 'openai: ' . detail}
   endif
 
   let output = get(resp, 'output', [])
@@ -199,8 +205,8 @@ function! air#backend#openai#parse(result) abort
   let warning = ''
   if status ==# 'incomplete'
     let warning = reason ==# 'max_output_tokens'
-          \ ? 'response hit max_output_tokens and is truncated — raise it in '
-          \   . 'g:air_openai_params or revise a smaller scope'
+          \ ? 'response hit max_output_tokens and is truncated — raise '
+          \   . 'g:air_openai_max_output_tokens or revise a smaller scope'
           \ : 'response is incomplete (' . reason . ') and may be truncated'
   endif
 
@@ -210,6 +216,7 @@ endfunction
 
 " The sync transport folds stderr into stdout, so the body can follow a
 " "curl: (22) ..." line: decode from the first line that opens an object.
+" REQ 12.19
 function! s:decode(text) abort
   let raw = matchstr(a:text, '\%(^\|\n\)\s*\zs{\_.*')
   let raw = substitute(raw, '\_s*$', '', '')
@@ -248,49 +255,6 @@ function! s:last_line(text, fallback) abort
   let lines = filter(split(a:text, "\n"),
         \ 'v:val !~# "^\\s*$\\|^curl: try ''curl --help''"')
   return empty(lines) ? a:fallback : lines[-1]
-endfunction
-
-" Turn the most common API and curl failures into something actionable.
-function! s:humanize(detail) abort
-  let d = a:detail
-  if d =~? 'Incorrect API key\|invalid_api_key\|\<401\>\|Unauthorized'
-    return d . ' — check $' . air#backend#openai#key_env()
-  endif
-  if d =~? 'model_not_found\|model .* does not exist\|do not have access to'
-        \ . ' the model'
-    return d . ' — set g:air_openai_model to a model your API key can use'
-  endif
-  if d =~? 'insufficient_quota\|exceeded your current quota'
-    return d . ' — add credits or raise the limit on your OpenAI account'
-  endif
-  if d =~? 'rate limit\|rate_limit\|\<429\>\|Too Many Requests'
-    return d . ' — rate limited by OpenAI; retry shortly'
-  endif
-  if d =~? 'reasoning.effort'
-    return d . ' — this model rejects that effort: change or unset '
-          \ . 'g:air_openai_reasoning_effort'
-  endif
-  if d =~? 'Unsupported parameter\|Unknown parameter'
-    return d . ' — remove it from g:air_openai_params'
-  endif
-  if d =~? 'import fail\|variable expansion failure'
-    return d . ' — export $' . air#backend#openai#key_env() . ' before '
-          \ . 'starting Vim'
-  endif
-  if d =~? 'Operation timed out'
-    return d . ' — raise g:air_timeout or revise a smaller scope'
-  endif
-  if d =~? 'option --\%(variable\|expand-header\).*unknown\|unknown option'
-    return d . ' — vim-air needs curl 8.3 or newer'
-  endif
-  if d =~? 'Could not resolve host\|Failed to connect\|Connection refused'
-        \ . '\|Connection timed out'
-    return d . ' — network problem reaching ' . air#backend#openai#url()
-  endif
-  if d =~? 'returned error: 404'
-    return d . ' — check g:air_openai_base_url'
-  endif
-  return d
 endfunction
 
 let &cpoptions = s:save_cpo

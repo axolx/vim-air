@@ -10,8 +10,8 @@
   `:AirBuffer`, `:AirParagraph`, `:AirSection`, `:AirAbort`, `:AirClose`,
   `:AirLog`. The motion scope is an operator, `<Plug>AirMotion` (R5.5), not a
   command, since an Ex command cannot take a motion.
-- R0.3 Configuration variables use the `g:air_` prefix; buffer-local overrides
-  use `b:air_`.
+- R0.3 Configuration variables use the `g:air_` prefix. There are no
+  buffer-local overrides.
 - R0.4 Autoload namespace is `air#`, e.g. `air#backend#run()`, `air#submit()`.
 - R0.5 The prompt buffer filetype is `air`; the proposal scratch buffer keeps the
   source buffer's filetype (R4.5) and is identified by a buffer variable, not a
@@ -23,7 +23,8 @@
 
 A plugin that treats an LLM as a _reviser_: given a prompt and a region of text,
 it produces a proposed new version and presents it in Vim's native diff mode so
-the user accepts or rejects changes with `]c`, `[c`, `do`, `dp`.
+the user moves between changes with `]c` and `[c` and accepts them into the
+source buffer with `do` or `dp`.
 
 Serves both code editing and prose work (writing, copy editing, revision).
 
@@ -53,17 +54,28 @@ Serves both code editing and prose work (writing, copy editing, revision).
   composition (see §8a).
 - R4.3 The response MUST be placed in a scratch buffer, not applied to the
   original buffer.
-- R4.4 The scratch buffer MUST open in a vertical split (configurable to
-  horizontal) with `diffthis` active in both windows.
+- R4.4 The scratch buffer MUST open in a vertical split with `diffthis` active
+  in both windows.
 - R4.5 The scratch buffer MUST inherit the original buffer's `filetype`,
   `fileencoding`, and `fileformat` so syntax and diffing behave correctly.
 - R4.6 The scratch buffer MUST be `nomodifiable` by default (configurable),
   `buftype=nofile`, `bufhidden=wipe`, `noswapfile`.
 - R4.7 Accepting changes MUST be done entirely with native Vim diff commands.
-- R4.8 A command `:AirAbort` MUST cancel an in-flight request.
+- R4.8 A command `:AirAbort` MUST cancel an in-flight asynchronous request.
+  The blocking fallback (R3.4) cannot be interrupted this way.
 - R4.9 A command `:AirClose` MUST close the diff split, run `diffoff` on
-  the original window, and restore prior window layout and diff-related options
-  (`wrap`, `foldmethod`, `foldcolumn`, `scrollbind`, `cursorbind`).
+  the original window, and restore diff-related options (`wrap`,
+  `foldmethod`, `foldcolumn`, `scrollbind`, `cursorbind`) and the window sizes
+  of the tab page as they were before the split. The same restoration MUST
+  happen when the proposal is closed with `:quit` or `:bwipeout`.
+
+- R4.10 The plugin MUST allow only one review across the editor. Opening a new
+  proposal MUST close the previous review and restore its window settings and
+  global `diffopt` before saving the new session. Proposal names include the
+  source buffer number.
+- R4.11 A response MUST be discarded if the source buffer's change counter
+  differs from the value captured when the request was composed. The plugin
+  MUST report that the source changed and ask the user to run `:Air` again.
 
 ## 5. Target text (scope)
 
@@ -72,8 +84,10 @@ Serves both code editing and prose work (writing, copy editing, revision).
   presented in full-buffer context: the scratch buffer contains the entire
   original buffer with only the selected region replaced.
 - R5.3 Current paragraph.
-- R5.4 Current Markdown section (heading through next heading of same or higher
-  level).
+- R5.4 Current Markdown section: from the nearest `#`-style heading (one to six
+  `#` and a space) at or above the cursor, through the line before the next
+  such heading of the same or higher level. Underlined (setext) headings are
+  not recognized, and `#` lines inside fenced code blocks count as headings.
 - R5.5 Any motion or text object via the `<Plug>AirMotion` operator, which
   revises the lines between the `'[` and `']` marks it sets, e.g. with
   `nmap <Leader>a <Plug>AirMotion`: `<Leader>aip`, `<Leader>aaf`.
@@ -147,8 +161,7 @@ through `curl`, followed (§7.4).
   `--system` and `--inference-config`. Prompts routinely exceed `ARG_MAX`, and
   embedding JSON in a command line invites quoting bugs. Temp files MUST be
   deleted after the request, including on abort.
-- R7.12 The model ID MUST be configurable via `g:air_model` and overridable
-  per-request. There MUST be no default: Bedrock model IDs are account- and
+- R7.12 The model ID MUST come from `g:air_model`. There MUST be no default: Bedrock model IDs are account- and
   region-specific, and on-demand models often require a regional
   inference-profile prefix. A missing model MUST be reported by `check()`.
 - R7.13 `maxTokens`, `temperature` and `topP` MUST be configurable, with
@@ -160,9 +173,8 @@ through `curl`, followed (§7.4).
   MUST skip non-text blocks (`reasoningContent`, `toolUse`).
 - R7.15 A `stopReason` of `max_tokens` MUST raise a visible warning: a truncated
   revision otherwise looks like a legitimate diff.
-- R7.16 Common AWS failures (expired or missing credentials, `AccessDenied`,
-  model access not granted, `ValidationException`, throttling, bad region) MUST
-  be mapped to actionable messages rather than passed through raw.
+- R7.16 AWS CLI failures MUST display the provider's error text, without
+  classifying error phrases or appending provider-specific advice.
 - R7.17 Failures MUST report a single-line `echohl` error, with full stdout and
   stderr retrievable via `:AirLog`.
 
@@ -196,14 +208,15 @@ through `curl`, followed (§7.4).
   and still deliver the JSON error body, and with `--max-time` set from
   `g:air_timeout` (unless 0), since curl has no overall time limit of its own
   and the dispatcher's timer does not cover the blocking fallback.
-- R7.24 The model MUST come from the per-request override, then
-  `g:air_openai_model`, and MUST NOT fall back to `g:air_model` (a Bedrock ID
+- R7.24 The model MUST come from `g:air_openai_model`, and MUST NOT fall back to `g:air_model` (a Bedrock ID
   for most users). The effort MUST come from `g:air_openai_reasoning_effort`
   and is sent as `reasoning.effort`. The defaults MUST be `gpt-6-luna` at
   `low` effort; an explicit `''` effort MUST be omitted so the API default
   applies, and an explicit `''` model MUST be reported by `check()`. No
   configuration beyond the API key is required.
-  `g:air_openai_params` (merged into the body), `g:air_openai_base_url`,
+  `g:air_openai_max_output_tokens` MUST set `max_output_tokens` (default 8192).
+  Arbitrary request-body parameters MUST NOT be supported.
+  `g:air_openai_base_url`,
   `g:air_curl_cmd` and `g:air_curl_args` MUST be supported as pass-throughs.
 - R7.25 The revision is the concatenated `output_text` of the `message` output
   items; reasoning items MUST be skipped. A `status` of `incomplete` MUST
@@ -211,10 +224,8 @@ through `curl`, followed (§7.4).
   the reason. A `refusal` MUST fail with its text, and a `status` of `failed`
   MUST fail even without an error object. The error body MUST be found even
   when the sync transport has folded curl's stderr in front of it.
-- R7.26 Common failures (unset or invalid key, a model the key cannot use,
-  exhausted quota, rate limits, an unsupported reasoning effort or parameter,
-  curl older than 8.3, network errors, a curl timeout, a 404 from a wrong
-  `g:air_openai_base_url`) MUST be mapped to actionable messages.
+- R7.26 OpenAI and curl failures MUST display the provider or transport error
+  text, without classifying error phrases or appending provider-specific advice.
 
 ## 8. Response handling
 
@@ -231,9 +242,12 @@ through `curl`, followed (§7.4).
   when it did.
 - R8.3 If the response is byte-identical to the source, MUST report "no changes
   proposed" and not open a split.
-- R8.4 `diffopt` SHOULD be augmented per-session with word-level diffing
-  (`internal,algorithm:patience`, `iwhite` optional) without permanently
-  mutating the user's global setting.
+- R8.4 `diffopt` SHOULD be set per-session to patience hunks with word-level
+  highlighting inside changed lines
+  (`internal,filler,algorithm:patience,inline:word`, `iwhite` optional)
+  without permanently mutating the user's global setting. Items the running
+  Vim rejects (`inline:word` needs Vim 9.1.1243+) MUST be dropped rather than
+  failing the session.
 
 ## 8a. Prompt entry
 
@@ -255,14 +269,8 @@ line.
 - R8a.6 The prompt buffer SHOULD be prefilled with the previous prompt.
 - R8a.7 Prompt history SHOULD persist across sessions, recallable into the
   buffer with `<C-p>`/`<C-n>`.
-- R8a.8 The prompt buffer SHOULD display the resolved target scope on an
-  editable comment line (e.g. `# scope: paragraph`) so scope can be corrected
-  without restarting.
-- R8a.9 Prompts MUST also be sourceable from a register (`:Air @p`) or a
-  file (`:Air -f path`) for reuse and scripting.
-- R8a.10 `g:air_prompt_ui` MUST select `'buffer'` (default) or `'input'` for
-  users who prefer the single-line cmdline form. The `'input'` mode SHOULD
-  provide completion over named prompts.
+- R8a.9 Prompts MUST also be sourceable from a register (`:Air @p`). Users can
+  read prompt files into registers using Vim's `readfile()`.
 - R8a.11 Prompt entry MUST behave identically in Vim and Neovim with no version
   gating.
 
@@ -273,15 +281,13 @@ line.
   `g:air_aws_region`, `g:air_aws_args`, `g:air_max_tokens`,
   `g:air_temperature`, `g:air_top_p`, `g:air_inference_config`
 - OpenAI: `g:air_openai_model`, `g:air_openai_reasoning_effort`,
-  `g:air_openai_params`, `g:air_openai_base_url`, `g:air_openai_api_key_env`,
+  `g:air_openai_max_output_tokens`, `g:air_openai_base_url`, `g:air_openai_api_key_env`,
   `g:air_curl_cmd`, `g:air_curl_args`
-- Execution: `g:air_async`, `g:air_timeout`, `g:air_max_input_bytes`,
-  `g:air_cleanup_tempfiles`
-- Prompting: `g:air_prompt_ui` (`buffer` | `input`), `g:air_prompts`,
-  `g:air_ft_prompts`, `g:air_system_prompt`,
-  `g:air_prompt_height`, `g:air_prompt_comment`, `g:air_prefill_last`,
+- Execution: `g:air_async`, `g:air_timeout`, `g:air_max_input_bytes`
+- Prompting: `g:air_prompts`,
+  `g:air_ft_prompts`, `g:air_system_prompt`, `g:air_prefill_last`,
   `g:air_history`, `g:air_history_file`, `g:air_history_size`
-- Review UI: `g:air_split` (`vertical` | `horizontal`), `g:air_diffopt`,
+- Review UI: `g:air_diffopt`,
   `g:air_modifiable`, `g:air_default_scope`, `g:air_proposal_maps`
 - Diagnostics: `g:air_log_size`
 - Hooks: `g:Air_backend`, `g:Air_output_filter`
@@ -343,15 +349,14 @@ constraint discovered while satisfying, the requirements above.
 - **R7.13 (inference config) — omission is the safe default.** Sending
   `temperature: 0` for determinism failed against newer models with
   "`temperature` is deprecated for this model". Nothing but `maxTokens` is sent
-  unless asked for, and the two deprecation messages are mapped to a hint
-  naming the setting to unset.
+  unless asked for. Provider error text is displayed without extra advice.
 - **R7.18 (sync fallback) — streams cannot be separated.** `system()` folds
   stderr into stdout via `'shellredir'`, so on a non-zero exit the dispatcher
   passes the combined output to the backend as `stderr` too. Without this, AWS
   error messages were reduced to "exit status 254" whenever jobs were disabled.
 - **R10.2 (tests) — harness details.** Vim's silent-ex mode (`-es`) suppresses
   `:echo`, and `writefile()` refuses `/dev/stderr` there, so results are
-  appended to `$AIR_TEST_LOG` and printed by `test/run.sh`. 245 assertions, no
+  appended to `$AIR_TEST_LOG` and printed by `test/run.sh`. Offline assertions, no
   network, no AWS and no OpenAI calls: the Bedrock and OpenAI backends are
   exercised through stub `aws` and `curl` scripts, and a fake backend covers
   the dispatcher interface.
@@ -365,6 +370,10 @@ constraint discovered while satisfying, the requirements above.
   on stdout, and the unset-variable and unresolvable-host failures were checked
   against the live endpoint with a dummy key; tests use a stub `curl`. A
   successful response has not yet been checked against a live key.
+- **R7.23 (stdin) — Vim's blocking fallback uses a temp file.** Vim's
+  `system()` writes its `{input}` to a temporary file and redirects it to
+  stdin, so with jobs unavailable the request body (never the API key) briefly
+  exists on disk. Vim deletes it; the async transports and Neovim use a pipe.
 - **R4.9 (window sizes) — restored after the window is gone.** `BufWipeout`
   fires while the closing proposal window still counts, and `winrestcmd()`
   addresses windows by number, so sizes are replayed only once the tab page is
@@ -374,5 +383,7 @@ constraint discovered while satisfying, the requirements above.
   `diffopt` assignment (`E474`) if any item is unknown, and Vim 8.0 predates
   `internal` and `algorithm:`, so each item is tried in turn and kept only if
   accepted.
-- **Repository directory.** Still `vim-ai-diff` on disk; rename to `vim-air` to
-  match the plugin name.
+- **Fixed workflow.** The input UI, horizontal split, per-request model and
+  prompt-file options, arbitrary OpenAI body parameters, and provider error
+  advice were removed. Both Bedrock and OpenAI remain supported. Legacy UI and
+  body-parameter settings are ignored; removed command options are errors.

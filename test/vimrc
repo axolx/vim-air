@@ -3,6 +3,7 @@ set noswapfile
 set nomore
 set shortmess+=filnxtToOF
 let g:air_history = 0
+let g:air_history_file = tempname()
 let g:air_async = 0
 execute 'set runtimepath^=' . expand('<sfile>:p:h:h')
 filetype plugin on

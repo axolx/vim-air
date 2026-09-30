@@ -5,8 +5,8 @@ scriptencoding utf-8
 let s:save_cpo = &cpoptions
 set cpoptions&vim
 
-" srcbuf -> session state
-let s:sessions = {}
+" One review across the editor.
+let s:session = {}
 
 let s:winopts = ['wrap', 'foldmethod', 'foldcolumn', 'foldenable',
       \ 'foldlevel', 'scrollbind', 'cursorbind', 'diff']
@@ -25,8 +25,57 @@ function! s:restore_winopts(saved) abort
   endfor
 endfunction
 
+" R4.9 — put window sizes back as they were before the split. Opening and
+" closing the proposal re-equalizes windows under 'equalalways', which loses
+" any sizes the user set. winrestcmd() addresses windows by number, so it is
+" only replayed when the tab page has the same window count as when saved.
+" Extra arguments (a timer ID) are ignored.
+" REQ 3.11
+function! s:restore_layout(session, ...) abort
+  if get(a:session, 'layout_restored', 0)
+    return
+  endif
+  let current = win_getid()
+  if !win_gotoid(a:session.srcwin)
+    return
+  endif
+  try
+    if winnr('$') == a:session.wincount
+      execute a:session.winrest
+      let a:session.layout_restored = 1
+    endif
+  finally
+    call win_gotoid(current)
+  endtry
+endfunction
+
+" R8.4 — apply a 'diffopt' value, keeping every item this Vim accepts.
+" "inline:word" needs Vim 9.1.1243+, and Vim 8.0 predates "internal" and
+" "algorithm:", so an item the build rejects is dropped instead of failing
+" the whole setting.
+" REQ 3.14
+function! s:set_diffopt(want) abort
+  let accepted = []
+  for item in split(a:want, ',')
+    try
+      let &diffopt = join(accepted + [item], ',')
+      call add(accepted, item)
+    catch /^Vim\%((\a\+)\)\=:E474:/
+    endtry
+  endfor
+  let &diffopt = join(accepted, ',')
+endfunction
+
 " R4.3/R4.4 — the response lands in a scratch buffer beside the original.
+" REQ 3.1, REQ 3.2, REQ 3.4, REQ 3.5, REQ 3.6, REQ 3.7, REQ 3.8,
+" REQ 3.13, REQ 3.16, REQ 3.17, REQ 3.18
 function! air#diff#open(req, lines) abort
+  " REQ 3.21
+  if getbufvar(a:req.srcbuf, 'changedtick') != a:req.changedtick
+    call air#error('source buffer changed; run :Air again')
+    return
+  endif
+
   let proposal_lines = air#text#splice(a:req.all_lines,
         \ a:req.start, a:req.end, a:lines)
 
@@ -42,23 +91,29 @@ function! air#diff#open(req, lines) abort
     return
   endif
 
-  " Only one live session per source buffer.
-  if has_key(s:sessions, a:req.srcbuf)
-    call air#diff#close_session(a:req.srcbuf)
+  " Replacing a review restores its options before saving the next session.
+  let source = win_getid(srcwin)
+  call air#diff#close()
+  if !win_gotoid(source) || bufnr('%') != a:req.srcbuf
+    call air#error('source buffer is no longer visible')
+    return
   endif
-
-  execute srcwin . 'wincmd w'
   let session = {
         \ 'srcbuf': a:req.srcbuf,
+        \ 'srcwin': source,
         \ 'srcwin_opts': s:save_winopts(),
         \ 'diffopt': &diffopt,
         \ 'scope': a:req.scope,
+        \ 'winrest': winrestcmd(),
+        \ 'wincount': winnr('$'),
         \ }
 
-  " R8.4 — better hunk granularity for prose, restored on close.
-  let want = air#get('diffopt', 'internal,filler,algorithm:patience')
+  " R8.4 — patience hunks and word-level highlighting within changed lines,
+  " restored on close.
+  let want = air#get('diffopt',
+        \ 'internal,filler,algorithm:patience,inline:word')
   if !empty(want)
-    let &diffopt = want
+    call s:set_diffopt(want)
   endif
 
   diffthis
@@ -67,10 +122,9 @@ function! air#diff#open(req, lines) abort
   let ff = getbufvar(a:req.srcbuf, '&fileformat')
   let fe = getbufvar(a:req.srcbuf, '&fileencoding')
 
-  let split = air#get('split', 'vertical') ==# 'horizontal' ? '' : 'vertical'
-  execute split . ' new'
+  vertical new
 
-  let name = 'air://proposal/' . fnamemodify(bufname(a:req.srcbuf), ':t')
+  let name = 'air://proposal/' . a:req.srcbuf
   if bufexists(name)
     execute 'silent! bwipeout!' bufnr(name)
   endif
@@ -88,7 +142,6 @@ function! air#diff#open(req, lines) abort
   " R0.5 — the proposal buffer keeps the source filetype, so it is tagged with
   " a buffer variable rather than a filetype.
   let b:air_proposal = 1
-  let b:air_srcbuf = a:req.srcbuf
 
   if !air#get('modifiable', 0)
     setlocal nomodifiable
@@ -97,100 +150,77 @@ function! air#diff#open(req, lines) abort
   diffthis
 
   let session.proposal = bufnr('%')
-  let s:sessions[a:req.srcbuf] = session
+  let s:session = session
 
   " R4.9 — clean up if the user wipes or closes the proposal directly.
   augroup Air
     execute 'autocmd BufWipeout <buffer=' . session.proposal . '>'
-          \ 'call air#diff#on_proposal_gone(' . a:req.srcbuf . ')'
+          \ 'call air#diff#on_proposal_gone()'
   augroup END
 
-  call s:map_proposal()
+  " REQ 3.19
+  if air#get('proposal_maps', 1)
+    nnoremap <buffer> <silent> q :AirClose<CR>
+  endif
 
-  " Land on the first change.
+  " Land on the first change. ]c jumps past a change that starts on line 1.
   keepjumps normal! gg
-  silent! normal! ]c
+  if !diff_hlID(1, 1) && !diff_filler(1)
+    silent! normal! ]c
+  endif
 
   call air#info(printf('proposal ready (%s) — ]c [c do dp, :AirClose',
         \ a:req.scope))
 endfunction
 
-function! s:map_proposal() abort
-  if !air#get('proposal_maps', 1)
+" REQ 3.10, REQ 3.12, REQ 3.15
+function! air#diff#on_proposal_gone() abort
+  if empty(s:session)
     return
   endif
-  nnoremap <buffer> <silent> q :AirClose<CR>
-endfunction
-
-function! air#diff#on_proposal_gone(srcbuf) abort
-  if !has_key(s:sessions, a:srcbuf)
-    return
-  endif
-  let session = s:sessions[a:srcbuf]
-  unlet s:sessions[a:srcbuf]
+  let session = s:session
+  let s:session = {}
   let &diffopt = session.diffopt
 
-  let win = bufwinnr(a:srcbuf)
-  if win != -1
-    let cur = winnr()
-    execute win . 'wincmd w'
-    call s:restore_winopts(session.srcwin_opts)
-    if winnr() != cur && cur <= winnr('$')
-      execute cur . 'wincmd w'
+  let current = win_getid()
+  if win_gotoid(session.srcwin)
+    if bufnr('%') == session.srcbuf
+      call s:restore_winopts(session.srcwin_opts)
     endif
+    call win_gotoid(current)
+  endif
+
+  " BufWipeout can fire before the proposal window disappears.
+  if has('timers')
+    call timer_start(0, function('s:restore_layout', [session]))
   endif
 endfunction
 
-" R4.9 — :AirClose from either side of the diff.
+" REQ 3.9
 function! air#diff#close() abort
-  let srcbuf = 0
-
-  if exists('b:air_proposal')
-    let srcbuf = b:air_srcbuf
-  elseif has_key(s:sessions, bufnr('%'))
-    let srcbuf = bufnr('%')
-  else
-    for [key, session] in items(s:sessions)
-      if session.proposal == bufnr('%')
-        let srcbuf = str2nr(key)
-        break
-      endif
-    endfor
-  endif
-
-  if !srcbuf
-    call air#info('no air diff session here')
+  if empty(s:session)
     return
   endif
-
-  call air#diff#close_session(srcbuf)
-endfunction
-
-function! air#diff#close_session(srcbuf) abort
-  if !has_key(s:sessions, a:srcbuf)
-    return
-  endif
-  let proposal = s:sessions[a:srcbuf].proposal
-
-  let win = bufwinnr(proposal)
-  if win != -1
-    execute win . 'wincmd c'
-  endif
-  if bufexists(proposal)
-    " Triggers BufWipeout -> on_proposal_gone.
-    execute 'silent! bwipeout!' proposal
+  let session = s:session
+  let current = win_getid()
+  if bufexists(session.proposal)
+    execute 'silent! bwipeout!' session.proposal
   else
-    call air#diff#on_proposal_gone(a:srcbuf)
+    call air#diff#on_proposal_gone()
   endif
-
-  let win = bufwinnr(a:srcbuf)
-  if win != -1
-    execute win . 'wincmd w'
+  call s:restore_layout(session)
+  if !win_gotoid(current)
+    call win_gotoid(session.srcwin)
   endif
 endfunction
 
+" Inspection helper for tests and diagnostics.
 function! air#diff#sessions() abort
-  return copy(s:sessions)
+  let sessions = {}
+  if !empty(s:session)
+    let sessions[s:session.srcbuf] = copy(s:session)
+  endif
+  return sessions
 endfunction
 
 let &cpoptions = s:save_cpo
