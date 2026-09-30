@@ -1,5 +1,6 @@
 " vim-air test suite (R10.2). Run: make test  /  test/run.sh
-" No network and no AWS calls: a fake backend, a stub `aws`, and g:Air_backend.
+" No network, no AWS and no OpenAI calls: a fake backend, stub `aws` and
+" `curl` executables, and g:Air_backend.
 
 scriptencoding utf-8
 
@@ -701,6 +702,232 @@ call delete(s:failing)
 
 unlet g:air_aws_cmd
 unlet g:air_model
+
+" ======================================================= backend: openai ====
+
+call s:say('--- backend: openai ---')
+
+call s:ok(index(air#backend#available(), 'openai') >= 0,
+      \ 'openai is discovered on the runtimepath')
+
+let s:saved_key = $OPENAI_API_KEY
+let $OPENAI_API_KEY = ''
+
+let g:air_curl_cmd = 'definitely-not-a-real-binary-xyz'
+call s:ok(air#backend#openai#check() =~# 'not found in \$PATH',
+      \ 'missing curl is reported (R7.3)')
+call s:ok(air#backend#openai#check() =~# 'g:air_curl_cmd',
+      \ 'curl error suggests the fix')
+let g:air_curl_cmd = 'sh'
+call s:ok(air#backend#openai#check() =~# '\$OPENAI_API_KEY is not set',
+      \ 'an unset API key is reported before spawning curl')
+let $OPENAI_API_KEY = 'sk-test-secret'
+call s:eq(air#backend#openai#check(), '',
+      \ 'check passes with curl present and a key exported')
+let g:air_openai_api_key_env = 'bad name'
+call s:ok(air#backend#openai#check() =~# 'environment variable name',
+      \ 'an invalid key variable name is rejected')
+unlet g:air_openai_api_key_env
+let g:air_openai_model = ''
+call s:ok(air#backend#openai#check() =~# 'no model set',
+      \ "g:air_openai_model = '' is reported")
+unlet g:air_openai_model
+
+call s:eq(air#backend#openai#model({}), 'gpt-6-luna',
+      \ 'gpt-6-luna is the default model')
+call s:eq(air#backend#openai#reasoning_effort(), 'low',
+      \ 'low is the default reasoning effort')
+let g:air_model = 'us.anthropic.some-bedrock-id'
+call s:eq(air#backend#openai#model({}), 'gpt-6-luna',
+      \ 'the Bedrock g:air_model is not sent to openai')
+unlet g:air_model
+let g:air_openai_model = 'gpt-test'
+call s:eq(air#backend#openai#model({}), 'gpt-test', 'g:air_openai_model is used')
+call s:eq(air#backend#openai#model({'model': 'other'}), 'other',
+      \ 'per-call model overrides g:air_openai_model (R7.24)')
+
+let s:req = air#backend#openai#request(s:payload, {})
+let s:argv = s:req.argv
+call s:eq(s:argv[0 : 1], ['sh', '-q'], 'curl runs with ~/.curlrc ignored')
+call s:eq(s:argv[-1], 'https://api.openai.com/v1/responses',
+      \ 'the Responses API is the endpoint')
+call s:ok(join(s:argv) =~# '--data-binary @-', 'the body is read from stdin')
+call s:ok(index(s:argv, '--fail-with-body') >= 0,
+      \ 'HTTP errors fail while keeping the error body')
+call s:ok(join(s:argv) =~# '--variable %OPENAI_API_KEY',
+      \ 'curl imports the key from the environment itself')
+call s:ok(index(s:argv, 'Authorization: Bearer {{OPENAI_API_KEY}}') >= 0,
+      \ 'the key is expanded by curl into the Authorization header')
+call s:ok(join(s:argv) . s:req.stdin !~# 'sk-test-secret',
+      \ 'the API key never appears in argv or the body')
+call s:ok(empty(get(s:req, 'cleanup', [])) && empty(get(s:req, 'cleanup_dirs', [])),
+      \ 'no temp files are written')
+call s:ok(join(s:argv) =~# '--max-time 120 ',
+      \ 'curl is bounded by g:air_timeout, even on the sync transport (R7.19)')
+let g:air_timeout = 0
+call s:ok(index(air#backend#openai#request(s:payload, {}).argv, '--max-time') < 0,
+      \ 'g:air_timeout = 0 leaves curl unbounded')
+unlet g:air_timeout
+
+let s:body = json_decode(s:req.stdin)
+call s:eq(s:body.model, 'gpt-test', 'the model is sent')
+call s:eq(s:body.instructions, 'SYS', 'the system prompt is sent as instructions')
+call s:eq(s:body.input, 'USER', 'the user payload is sent as input')
+call s:eq(s:body.store, v:false, 'responses are not stored')
+call s:eq(s:body.reasoning, {'effort': 'low'}, 'the reasoning effort is sent')
+unlet g:air_openai_model
+
+let g:air_openai_reasoning_effort = ''
+call s:ok(!has_key(air#backend#openai#body(s:payload, {}), 'reasoning'),
+      \ "g:air_openai_reasoning_effort = '' leaves the effort to the API")
+unlet g:air_openai_reasoning_effort
+
+let g:air_openai_params = {'max_output_tokens': 500, 'text': {'verbosity': 'low'}}
+let s:body = air#backend#openai#body(s:payload, {})
+call s:eq(s:body.max_output_tokens, 500, 'g:air_openai_params adds fields')
+call s:eq(s:body.text, {'verbosity': 'low'}, 'g:air_openai_params can nest')
+unlet g:air_openai_params
+
+let g:air_openai_base_url = 'http://localhost:8080/v1/'
+let g:air_openai_api_key_env = 'MY_KEY'
+let g:air_curl_args = ['--proxy', 'http://p:3128']
+let s:argv2 = air#backend#openai#request(s:payload, {}).argv
+call s:eq(s:argv2[-1], 'http://localhost:8080/v1/responses',
+      \ 'g:air_openai_base_url is honoured, trailing slash and all')
+call s:ok(index(s:argv2, 'Authorization: Bearer {{MY_KEY}}') >= 0,
+      \ 'g:air_openai_api_key_env names the key variable')
+call s:eq(s:argv2[-3 : -2], ['--proxy', 'http://p:3128'],
+      \ 'extra curl args are forwarded before the URL (R7.7)')
+unlet g:air_openai_base_url g:air_openai_api_key_env g:air_curl_args
+
+" --- parse() ---
+
+let s:oa_ok = json_encode({'status': 'completed', 'error': v:null,
+      \ 'output': [
+      \   {'type': 'reasoning', 'summary': []},
+      \   {'type': 'message', 'role': 'assistant', 'content': [
+      \     {'type': 'output_text', 'text': "revised\nlines", 'annotations': []}]}],
+      \ 'usage': {'input_tokens': 10, 'output_tokens': 2}})
+let s:parsed = air#backend#openai#parse({'status': 0, 'stdout': s:oa_ok,
+      \ 'stderr': ''})
+call s:ok(s:parsed.ok, 'a completed response parses')
+call s:eq(s:parsed.text, "revised\nlines", 'output_text is returned')
+call s:eq(s:parsed.warning, '', 'a completed response has no warning')
+call s:eq(s:parsed.usage.output_tokens, 2, 'usage is reported')
+
+call s:eq(air#backend#openai#parse({'status': 0, 'stdout': json_encode({
+      \ 'status': 'completed', 'output': [{'type': 'message', 'content': [
+      \   {'type': 'output_text', 'text': 'part one '},
+      \   {'type': 'output_text', 'text': 'part two'}]}]}),
+      \ 'stderr': ''}).text, 'part one part two', 'text parts are joined')
+
+let s:parsed = air#backend#openai#parse({'status': 0, 'stdout': json_encode({
+      \ 'status': 'incomplete',
+      \ 'incomplete_details': {'reason': 'max_output_tokens'},
+      \ 'output': [{'type': 'message', 'content': [
+      \   {'type': 'output_text', 'text': 'cut'}]}]}), 'stderr': ''})
+call s:ok(s:parsed.ok, 'a truncated response still parses')
+call s:ok(s:parsed.warning =~# 'truncated',
+      \ 'max_output_tokens warns that the revision is truncated (R7.15)')
+
+call s:ok(!air#backend#openai#parse({'status': 0, 'stdout': '', 'stderr': ''}).ok,
+      \ 'empty output fails')
+call s:ok(air#backend#openai#parse({'status': 0, 'stdout': 'not json',
+      \ 'stderr': ''}).error =~# 'JSON', 'non-JSON output fails clearly')
+call s:ok(air#backend#openai#parse({'status': 0, 'stdout': json_encode({
+      \ 'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'},
+      \ 'output': [{'type': 'reasoning'}]}), 'stderr': ''}).error
+      \ =~# 'no text (status: incomplete, max_output_tokens)',
+      \ 'a response spent entirely on reasoning fails with the reason')
+call s:ok(air#backend#openai#parse({'status': 0, 'stdout': json_encode({
+      \ 'status': 'completed', 'output': [{'type': 'message', 'content': [
+      \   {'type': 'refusal', 'refusal': 'no can do'}]}]}),
+      \ 'stderr': ''}).error =~# 'refused: no can do', 'a refusal is reported')
+call s:ok(air#backend#openai#parse({'status': 0, 'stdout': json_encode({
+      \ 'status': 'failed', 'error': {'code': 'server_error',
+      \ 'message': 'boom'}, 'output': []}), 'stderr': ''}).error
+      \ ==# 'openai: boom (server_error)', 'a failed response reports its error')
+
+let s:oa_401 = json_encode({'error': {'message': 'Incorrect API key provided: '
+      \ . 'sk-x.', 'type': 'invalid_request_error', 'code': 'invalid_api_key'},
+      \ 'status': 401})
+let s:parsed = air#backend#openai#parse({'status': 22, 'stdout': s:oa_401,
+      \ 'stderr': 'curl: (22) The requested URL returned error: 401'})
+call s:ok(!s:parsed.ok, 'an HTTP error is a failure')
+call s:ok(s:parsed.error =~# '^openai: Incorrect API key',
+      \ 'the API error message is surfaced')
+call s:ok(s:parsed.error =~# 'check \$OPENAI_API_KEY', 'a bad key gets a hint')
+call s:ok(air#backend#openai#parse({'status': 22,
+      \ 'stdout': "curl: (22) The requested URL returned error: 401\n" . s:oa_401,
+      \ 'stderr': ''}).error =~# 'Incorrect API key',
+      \ 'the error body is found when stderr is folded into stdout')
+
+for s:case in [
+      \ ['The model `x` does not exist or you do not have access to it.', 'g:air_openai_model'],
+      \ ['You exceeded your current quota, please check your plan.', 'add credits'],
+      \ ['Rate limit reached for gpt-test', 'retry shortly'],
+      \ ['Unsupported value: ''reasoning.effort'' does not support ''none''', 'g:air_openai_reasoning_effort'],
+      \ ['Unsupported parameter: ''temperature''', 'g:air_openai_params'],
+      \ ]
+  let s:parsed = air#backend#openai#parse({'status': 22,
+        \ 'stdout': json_encode({'error': {'message': s:case[0]}}), 'stderr': ''})
+  call s:ok(s:parsed.error =~# s:case[1],
+        \ 'openai failure "' . s:case[0][0 : 20] . '..." is annotated')
+endfor
+
+for s:case in [
+      \ ['curl: (6) Could not resolve host: api.openai.com', 'network problem'],
+      \ ['curl: (28) Operation timed out after 120002 milliseconds with 0 bytes received',
+      \  'raise g:air_timeout'],
+      \ ["curl: Variable 'OPENAI_API_KEY' import fail, not set\n"
+      \  . "curl: option --variable: variable expansion failure\n"
+      \  . "curl: try 'curl --help' for more information", 'export \$OPENAI_API_KEY'],
+      \ ["curl: option --variable: is unknown\n"
+      \  . "curl: try 'curl --help' for more information", 'curl 8.3'],
+      \ ]
+  let s:parsed = air#backend#openai#parse({'status': 2, 'stdout': '',
+        \ 'stderr': s:case[0]})
+  call s:ok(s:parsed.error =~# '^curl failed: .*' . s:case[1],
+        \ 'curl failure "' . s:case[0][0 : 20] . '..." is annotated')
+endfor
+
+" --- end to end through the dispatcher, with a stub curl ---
+
+let g:air_backend_name = 'openai'
+let s:seen = tempname()
+let s:stub = tempname()
+call writefile(['#!/bin/sh',
+      \ 'cat > ' . shellescape(s:seen),
+      \ "cat <<'JSON'", s:oa_ok, 'JSON'], s:stub)
+call setfperm(s:stub, 'rwxr-xr-x')
+let g:air_curl_cmd = s:stub
+let s:result = {}
+call air#backend#run(s:payload, {}, function('Capture'))
+call s:ok(s:result.ok, 'openai backend round-trips through the dispatcher')
+call s:eq(s:result.text, "revised\nlines", 'openai text reaches the caller')
+call s:eq(json_decode(join(readfile(s:seen), "\n")).input, 'USER',
+      \ 'the stub received the request body on stdin')
+
+call delete(s:seen)
+let g:air_async = 1
+let s:result = {}
+call air#backend#run(s:payload, {}, function('Capture'))
+let s:waited = 0
+while empty(s:result) && s:waited < 300
+  sleep 10m
+  let s:waited += 1
+endwhile
+let g:air_async = 0
+call s:ok(get(s:result, 'ok', 0), 'async openai request completes (R7.18)')
+call s:eq(json_decode(join(readfile(s:seen), "\n")).instructions, 'SYS',
+      \ 'the async path delivers the body on stdin')
+call delete(s:stub)
+call delete(s:seen)
+
+unlet g:air_curl_cmd
+unlet g:air_backend_name
+let $OPENAI_API_KEY = s:saved_key
+
 let g:Air_backend = s:saved_backend
 
 call s:ok(!air#backend#abort(), 'abort with no job in flight is a no-op')

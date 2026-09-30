@@ -181,7 +181,7 @@ function! air#send(request) abort
   let req = a:request
   let req.target_lines = req.all_lines[req.start - 1 : req.end - 1]
 
-  " R7.10 — confirm oversized input rather than silently spending tokens.
+  " R7.20 — confirm oversized input rather than silently spending tokens.
   let bytes = strlen(join(req.all_lines, "\n"))
   let limit = air#get('max_input_bytes', 100000)
   if bytes > limit

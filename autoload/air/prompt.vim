@@ -125,7 +125,8 @@ function! air#prompt#open(request) abort
   let b:air_request = a:request
   let b:air_history_idx = -1
 
-  " R8a.6 — prefill with a named prompt template or the previous prompt.
+  " R8a.6 — prefill with the previous prompt, unless the request already
+  " carries prompt text.
   let prefill = !empty(a:request.prompt)
         \ ? a:request.prompt
         \ : air#get('prefill_last', 1) ? air#prompt#last() : ''

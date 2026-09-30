@@ -38,6 +38,8 @@ clichés and checking claims are first-class uses.
 2. REQUIREMENTS                                          *air-requirements*
 
 - Vim 8.0 or later, or Neovim. Pure Vimscript; no Lua or Python host.
+- One backend's CLI. The default, AWS Bedrock, is described here; to use an
+  OpenAI API key instead, see |air-backend-openai|.
 - The AWS CLI v2 on your $PATH, with working credentials.
 - Amazon Bedrock model access granted in your account and region.
 - A model ID in |g:air_model| — there is no default, because Bedrock model IDs
@@ -58,7 +60,7 @@ Verify the plumbing outside Vim first: >
     aws bedrock-runtime converse --model-id "$MODEL" \
         --messages '[{"role":"user","content":[{"text":"hi"}]}]'
 
-Other backends are planned; see |air-backends|.
+For the OpenAI API, see |air-backend-openai|.
 
 ==============================================================================
 3. QUICK START                                            *air-quickstart*
@@ -224,10 +226,13 @@ If the response is identical to your text, no split opens and vim-air reports
 ==============================================================================
 9. CONFIGURATION                                               *air-config*
 
-|g:air_model| is the only setting you must provide.
+|g:air_model| is the only setting you must provide, and only for the default
+Bedrock backend. The OpenAI backend has its own settings; see
+|air-backend-openai|.
 
                                                               *g:air_model*
-The Bedrock model ID or inference profile ID. Required; there is no default.
+The Bedrock model ID or inference profile ID. Required for Bedrock; there is
+no default. Ignored by the OpenAI backend.
 On-demand access to many models needs the regional inference-profile prefix
 ("us.", "eu.", "apac."). >
     let g:air_model = 'us.anthropic.claude-sonnet-4-20250514-v1:0'
@@ -267,6 +272,9 @@ Falls back to a blocking |system()| call when jobs are unavailable.
 
                                                             *g:air_timeout*
 Seconds before an in-flight request is killed. Default 120. 0 disables.
+Asynchronous requests are stopped by a timer. The OpenAI backend also passes
+it to curl as --max-time, which bounds requests when jobs are unavailable
+too; the Bedrock backend relies on the AWS CLI's own timeouts there.
 
                                                     *g:air_max_input_bytes*
 Confirm before sending more than this many bytes. Default 100000.
@@ -302,7 +310,7 @@ prompts to keep (default 200).
 
                                                       *g:air_system_prompt*
 The instruction that forces plain-text-only output, sent as the Bedrock system
-field. Override with care: chat-tuned models otherwise narrate their changes,
+field, or as the OpenAI "instructions". Override with care: chat-tuned models otherwise narrate their changes,
 which corrupts the diff.
 
                                                        *g:air_proposal_maps*
@@ -335,11 +343,83 @@ An operator. It prompts for the region you move over: >
 ==============================================================================
 11. BACKENDS                                                 *air-backends*
 
-vim-air is built for multiple backends but currently ships one: "bedrock".
+vim-air ships two backends: "bedrock" (AWS Bedrock via the aws CLI, the
+default) and "openai" (the OpenAI Responses API via curl).
 
-                                                       *g:air_backend_name*
+                                                          *g:air_backend_name*
 Selects the backend. Default "bedrock". >
-    let g:air_backend_name = 'bedrock'
+    let g:air_backend_name = 'openai'
+
+OPENAI API                                                *air-backend-openai*
+
+Sends each revision as one POST to the Responses API, billed to your API key.
+There is no agent loop and no tool definitions: the request carries the
+system prompt, your text, and nothing else. Requirements:
+
+- curl 8.3 or later on your $PATH.
+- An OpenAI API key in $OPENAI_API_KEY (see |g:air_openai_api_key_env|),
+  exported before Vim starts, or set from your vimrc: >
+    let $OPENAI_API_KEY = trim(system('pass show openai/api-key'))
+<
+Minimum configuration: >
+
+    let g:air_backend_name = 'openai'
+
+With nothing else set, requests use gpt-6-luna at low reasoning effort.
+
+vim-air never reads the key. curl imports it from the environment
+(--variable) and expands it into the Authorization header (--expand-header),
+so it never appears in argv, in a temp file, or in |:AirLog|. The request body
+goes over curl's stdin, and is sent with "store": false.
+
+Verify the plumbing outside Vim first: >
+
+    curl https://api.openai.com/v1/responses \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -H 'Content-Type: application/json' \
+        -d '{"model":"gpt-6-luna","input":"Say hi."}'
+<
+A response cut short by max_output_tokens raises the same "truncated"
+warning as Bedrock's max_tokens. |g:air_max_tokens| and the other Bedrock
+inference settings do not apply; use |g:air_openai_params|.
+
+                                                          *g:air_openai_model*
+The model to use. Default "gpt-6-luna". |g:air_model| is not consulted, since
+it usually holds a Bedrock ID; the -model= option of |:Air| still overrides
+this per request. >
+    let g:air_openai_model = 'gpt-6.1-sol'
+
+                                               *g:air_openai_reasoning_effort*
+Sent as reasoning.effort, e.g. "low", "medium" or "high". Default "low":
+prose revisions rarely need much reasoning, and lower effort is faster and
+cheaper. Set it to '' to omit it and use the model's default. >
+    let g:air_openai_reasoning_effort = 'medium'
+
+                                                         *g:air_openai_params*
+A dictionary merged into the request body, for anything vim-air does not model
+directly. It overrides the fields vim-air sets. >
+    let g:air_openai_params = {'max_output_tokens': 16000,
+          \ 'text': {'verbosity': 'low'}}
+
+                                                       *g:air_openai_base_url*
+The API root; "/responses" is appended. Default "https://api.openai.com/v1".
+Point it at a proxy or any Responses-compatible endpoint. >
+    let g:air_openai_base_url = 'http://localhost:8080/v1'
+
+                                                    *g:air_openai_api_key_env*
+The name of the environment variable holding the API key. Default
+"OPENAI_API_KEY". >
+    let g:air_openai_api_key_env = 'AIR_OPENAI_KEY'
+
+                                                              *g:air_curl_cmd*
+The curl executable. Default "curl".
+
+                                                             *g:air_curl_args*
+Extra arguments added to the curl invocation, before the URL. ~/.curlrc is
+not read, so proxies and extra headers go here. >
+    let g:air_curl_args = ['--header', 'OpenAI-Project: proj_...']
+
+ADDING A BACKEND                                           *air-backend-add*
 
 Adding a backend means dropping one file on your 'runtimepath' at
 autoload/air/backend/{name}.vim implementing three functions. Nothing else in
@@ -399,6 +479,30 @@ and stderr.
 
 "aws not found in $PATH"
     Install the AWS CLI v2, or point |g:air_aws_cmd| at it.
+
+"curl not found in $PATH"
+    Install curl 8.3 or later, or point |g:air_curl_cmd| at it.
+
+"$OPENAI_API_KEY is not set"
+    Vim did not inherit the key. Export it in the shell that starts Vim, or
+    set it from your vimrc (see |air-backend-openai|).
+
+"curl failed: ... option --variable: is unknown"
+    Your curl predates 8.3, which added --variable and --expand-header.
+
+"openai: Incorrect API key provided"
+    The key in $OPENAI_API_KEY is wrong or revoked.
+
+"openai: The model `...` does not exist or you do not have access to it"
+    Set |g:air_openai_model| to a model your API key can use.
+
+"openai: You exceeded your current quota"
+    Add credits or raise the spending limit on your OpenAI account.
+
+"openai timed out" or "curl failed: ... Operation timed out"
+    Long documents take a while, since the model writes the whole revision
+    back. Raise |g:air_timeout|, revise a smaller scope, or lower
+    |g:air_openai_reasoning_effort|.
 
 "no model set"
     Set |g:air_model|. There is deliberately no default.

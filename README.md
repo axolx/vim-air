@@ -33,11 +33,15 @@ much as for code.
 ## Requirements
 
 - Vim 8.0+ or Neovim
-- AWS CLI v2 on `$PATH`, with working credentials
-- Amazon Bedrock model access in your account and region
+- One backend:
+  - **AWS Bedrock** (default): AWS CLI v2 on `$PATH` with working credentials,
+    and Bedrock model access in your account and region
+  - **OpenAI API**: curl 8.3+ on `$PATH` and an API key in `$OPENAI_API_KEY` —
+    see [OpenAI](#openai)
 
 vim-air never handles credentials. The AWS CLI resolves them however you
 already do — environment variables, a config profile, SSO, or an instance role.
+For OpenAI, curl reads the key from the environment itself.
 
 ```vim
 " the only required setting: Bedrock model IDs are account/region specific
@@ -138,7 +142,7 @@ nmap <Leader>am <Plug>AirMotion     " <Leader>amip, <Leader>amaf, ...
 
 ## Configuration
 
-`g:air_model` is the only thing you must set. Common knobs:
+On Bedrock, `g:air_model` is the only thing you must set. Common knobs:
 
 ```vim
 let g:air_aws_profile = 'work'
@@ -153,9 +157,37 @@ See `:help air-config` for the full list.
 
 ## Backends
 
-Built for several, ships one (`bedrock`). A backend is one file on your
-`runtimepath` at `autoload/air/backend/<name>.vim` implementing three
-functions:
+Ships two: `bedrock` (the default) and `openai`.
+
+### OpenAI
+
+Sends each revision as a single [Responses API](https://developers.openai.com/api/docs)
+request through `curl`, billed to your API key: no agent loop, no tools, just
+the system prompt, your text and the reply.
+
+```sh
+export OPENAI_API_KEY=sk-...   # before starting Vim
+```
+
+```vim
+let g:air_backend_name = 'openai'
+" optional — defaults shown; set the effort to '' to use the model's default
+let g:air_openai_model = 'gpt-6-luna'
+let g:air_openai_reasoning_effort = 'low'   " prose rarely needs more
+```
+
+vim-air never reads the key: curl imports it from the environment and expands it
+into the `Authorization` header, so it stays out of argv, temp files and
+`:AirLog`. Responses are sent with `store: false`. `g:air_openai_base_url`
+points it at any Responses-compatible endpoint, and `g:air_openai_params` adds
+request fields such as `max_output_tokens`. `g:air_model` is ignored here (it is
+a Bedrock ID), but `-model=` still works per request. See
+`:help air-backend-openai`.
+
+### Writing a backend
+
+A backend is one file on your `runtimepath` at
+`autoload/air/backend/<name>.vim` implementing three functions:
 
 ```vim
 air#backend#foo#check()                  " '' if usable, else why not
@@ -174,9 +206,10 @@ Select one with `let g:air_backend_name = 'foo'`. See
 make test
 ```
 
-No network and no AWS calls: the dispatcher is tested against a fake backend,
-the Bedrock backend against a stub `aws` executable plus direct `parse()` unit
-tests, and `g:Air_backend` bypasses the layer entirely.
+No network, no AWS and no OpenAI calls: the dispatcher is tested against a
+fake backend, the Bedrock and OpenAI backends against stub `aws` and `curl`
+executables plus direct `parse()` unit tests, and `g:Air_backend` bypasses the
+layer entirely.
 
 ## Linting
 
@@ -193,7 +226,7 @@ make update-hooks  # bump pinned hook versions
 ## Design notes
 
 - `REQUIREMENTS.md` holds the numbered requirements the code is written against.
-- Prompts reach Bedrock as `file://` temp files, not argv: prompts routinely
+- Prompts reach Bedrock as `file://` temp files and OpenAI over curl's stdin, not argv: prompts routinely
   exceed `ARG_MAX` and quoting JSON on a command line is a bug farm.
 - Nothing writes to your buffer except your own `do`/`dp`.
 - Only `maxTokens` is sent by default. Newer Bedrock models reject

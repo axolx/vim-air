@@ -90,7 +90,7 @@ endfunction
 " a:payload is {'system': ..., 'user': ...}
 " a:Cb receives {'ok': 0|1, 'text': ..., 'error': ..., 'raw': ...}
 function! air#backend#run(payload, opts, Cb) abort
-  " R7.11 / R10.3 — tests and alternative transports replace this one function.
+  " R7.7 / R10.3 — tests and alternative transports replace this one function.
   let Override = air#hook('backend')
   if Override isnot v:null
     return call(Override, [a:payload, a:opts, a:Cb])
@@ -149,7 +149,7 @@ endfunction
 
 " ------------------------------------------------------------------ sync -----
 
-" R7.8 — blocking fallback when jobs are unavailable.
+" R7.18 — blocking fallback when jobs are unavailable.
 function! s:run_sync(backend, request, Cb) abort
   let cmd = join(map(copy(a:request.argv), 'shellescape(v:val)'), ' ')
   let out = empty(a:request.stdin) ? system(cmd) : system(cmd, a:request.stdin)
@@ -206,7 +206,7 @@ function! s:run_async(backend, request, Cb) abort
     endif
   endif
 
-  " R7.9 — bounded wait.
+  " R7.19 — bounded wait.
   let timeout = air#get('timeout', 120)
   if timeout > 0
     let s:timer = timer_start(timeout * 1000, function('s:on_timeout'))

@@ -7,7 +7,9 @@
 - R0.1 Repository and plugin name: `vim-air`. Help file `doc/air.txt`, help tag
   `vim-air`.
 - R0.2 Primary command: `:Air`. Subordinate commands are `:Air`-prefixed:
-  `:AirAbort`, `:AirClose`, `:AirLog`, `:AirMotion`.
+  `:AirBuffer`, `:AirParagraph`, `:AirSection`, `:AirAbort`, `:AirClose`,
+  `:AirLog`. The motion scope is an operator, `<Plug>AirMotion` (R5.5), not a
+  command, since an Ex command cannot take a motion.
 - R0.3 Configuration variables use the `g:air_` prefix; buffer-local overrides
   use `b:air_`.
 - R0.4 Autoload namespace is `air#`, e.g. `air#backend#run()`, `air#submit()`.
@@ -35,11 +37,13 @@ Serves both code editing and prose work (writing, copy editing, revision).
 ## 3. Compatibility
 
 - R3.1 MUST work in Vim 8.0+ (classic Vim) as the primary target.
-- R3.2 MUST also work in Neovim without a separate code path.
+- R3.2 MUST also work in Neovim from the same plugin files. Branching on
+  `has('nvim')` is limited to APIs that differ, such as job control.
 - R3.3 MUST be pure Vimscript; no Lua, no Python host requirement.
 - R3.4 SHOULD work with `+job`/`+channel` for async; MUST degrade to a blocking
   `system()` call when unavailable.
-- R3.5 MUST have no plugin dependencies (curl and a shell are acceptable).
+- R3.5 MUST have no plugin dependencies. A shell and each backend's CLI are
+  acceptable: the `aws` CLI v2 for Bedrock, curl 8.3+ for OpenAI.
 
 ## 4. Core workflow
 
@@ -70,8 +74,9 @@ Serves both code editing and prose work (writing, copy editing, revision).
 - R5.3 Current paragraph.
 - R5.4 Current Markdown section (heading through next heading of same or higher
   level).
-- R5.5 Current function/block via a configurable text object or `'[`/`']`
-  motion, e.g. `:AirMotion` usable as an operator (`g=ip`, `g=af`).
+- R5.5 Any motion or text object via the `<Plug>AirMotion` operator, which
+  revises the lines between the `'[` and `']` marks it sets, e.g. with
+  `nmap <Leader>a <Plug>AirMotion`: `<Leader>aip`, `<Leader>aaf`.
 - R5.6 Scope MUST be selectable without leaving the keyboard flow; each scope
   SHOULD have a short command or mapping form.
 
@@ -81,9 +86,11 @@ Serves both code editing and prose work (writing, copy editing, revision).
   `let g:air_prompts = {'tighten': '...', 'grammar': '...'}`.
 - R6.2 `:Air <name>` MUST resolve to a named prompt when one matches;
   otherwise the argument is treated as a literal prompt.
-- R6.3 Ship a small default set of prose prompts (tighten, copy edit for grammar
-  only, reduce passive voice, remove clichés, flag unsupported claims) and code
-  prompts (add docs, modernize, simplify).
+- R6.3 Ship a small default set of named prompts. Prose: `tighten`, `grammar`
+  (copy edit for grammar only), `passive` (reduce passive voice), `cliches`,
+  `claims` (soften or qualify unsupported claims), `simplify` and `structure`
+  (paragraph order and transitions). Code: `docs`, `modernize` and `refactor`
+  (simplify without changing behavior).
 - R6.4 The system prompt MUST instruct the model to return only the revised text,
   no commentary, no fences, and to preserve the author's voice unless asked.
   Chat-tuned models otherwise narrate their changes, which would corrupt the
@@ -91,12 +98,14 @@ Serves both code editing and prose work (writing, copy editing, revision).
   user message (R7.4).
 - R6.5 Prompt templates MUST support placeholders for filetype, filename, and
   selected-region markers.
-- R6.6 Per-filetype prompt defaults SHOULD be supported.
+- R6.6 Per-filetype named prompts SHOULD be supported via `g:air_ft_prompts`,
+  taking precedence over global prompts of the same name.
 
 ## 7. Backend layer
 
-Scope decision: the plugin is built for **multiple backends**, but v1 ships
-**only AWS Bedrock**, invoked through the `aws` CLI.
+Scope decision: the plugin is built for **multiple backends**. v1 shipped
+**AWS Bedrock**, invoked through the `aws` CLI; the **OpenAI API**, called
+through `curl`, followed (§7.4).
 
 ### 7.1 Architecture
 
@@ -108,8 +117,8 @@ Scope decision: the plugin is built for **multiple backends**, but v1 ships
   temp-file cleanup, and logging.
 - R7.3 A backend MUST implement exactly three functions:
   - `check() -> string` — `''` when usable, otherwise a user-facing reason
-    (missing executable, unset model). Called before every request so
-    misconfiguration is reported without spawning a process.
+    (missing executable, unset model or API key). Called before every
+    request so misconfiguration is reported without spawning a process.
   - `request({payload}, {opts}) -> dict` — declares the subprocess: `argv`
     (required), plus optional `stdin`, `cleanup`, `cleanup_dirs`.
   - `parse({result}) -> dict` — maps `{status, stdout, stderr}` onto
@@ -161,10 +170,51 @@ Scope decision: the plugin is built for **multiple backends**, but v1 ships
 
 - R7.18 Requests SHOULD be async via `job_start`/`jobstart` so Vim is not
   blocked, falling back to a blocking `system()` call when jobs are unavailable.
-- R7.19 An in-flight request MUST be cancellable and MUST be bounded by
-  `g:air_timeout`.
+- R7.19 An in-flight asynchronous request MUST be cancellable and MUST be
+  bounded by `g:air_timeout`. The blocking fallback is bounded only by the
+  backend's own timeouts: the AWS CLI's for Bedrock, and `--max-time` for
+  OpenAI (R7.23).
 - R7.20 Large inputs SHOULD be checked against a configurable size threshold and
   require confirmation before a request is made.
+
+### 7.4 OpenAI API backend
+
+- R7.21 The OpenAI backend MUST make exactly one Responses API call
+  (`POST {base_url}/responses`) per revision through `curl`, with no agent
+  loop, tool definitions or stored state (`"store": false`).
+- R7.22 vim-air MUST NOT log, store or forward the API key; `check()` only
+  tests that the variable is non-empty. `curl` MUST import it from the
+  environment variable named by `g:air_openai_api_key_env` (default
+  `OPENAI_API_KEY`) with `--variable` and expand it into the `Authorization`
+  header with `--expand-header`, so it never appears in argv or a temp file.
+  This requires curl 8.3+. `check()` MUST report an unset variable before
+  spawning curl.
+- R7.23 The request body MUST go over curl's stdin (`--data-binary @-`), not
+  argv or a temp file. The system payload is sent as `instructions`, the user
+  payload as `input`. curl MUST run with `-q`, so a `~/.curlrc` cannot change
+  the output format, with `--fail-with-body`, so HTTP errors exit non-zero
+  and still deliver the JSON error body, and with `--max-time` set from
+  `g:air_timeout` (unless 0), since curl has no overall time limit of its own
+  and the dispatcher's timer does not cover the blocking fallback.
+- R7.24 The model MUST come from the per-request override, then
+  `g:air_openai_model`, and MUST NOT fall back to `g:air_model` (a Bedrock ID
+  for most users). The effort MUST come from `g:air_openai_reasoning_effort`
+  and is sent as `reasoning.effort`. The defaults MUST be `gpt-6-luna` at
+  `low` effort; an explicit `''` effort MUST be omitted so the API default
+  applies, and an explicit `''` model MUST be reported by `check()`. No
+  configuration beyond the API key is required.
+  `g:air_openai_params` (merged into the body), `g:air_openai_base_url`,
+  `g:air_curl_cmd` and `g:air_curl_args` MUST be supported as pass-throughs.
+- R7.25 The revision is the concatenated `output_text` of the `message` output
+  items; reasoning items MUST be skipped. A `status` of `incomplete` MUST
+  raise the R7.15 truncation warning, naming `max_output_tokens` when that is
+  the reason. A `refusal` MUST fail with its text, and a `status` of `failed`
+  MUST fail even without an error object. The error body MUST be found even
+  when the sync transport has folded curl's stderr in front of it.
+- R7.26 Common failures (unset or invalid key, a model the key cannot use,
+  exhausted quota, rate limits, an unsupported reasoning effort or parameter,
+  curl older than 8.3, network errors, a curl timeout, a 404 from a wrong
+  `g:air_openai_base_url`) MUST be mapped to actionable messages.
 
 ## 8. Response handling
 
@@ -202,8 +252,7 @@ line.
 - R8a.5 Submission and cancellation MUST use explicit buffer-local mappings so
   `<CR>` remains a literal newline. Defaults: `<CR>` (normal) submits, `q` or
   `<C-c>` cancels.
-- R8a.6 The prompt buffer SHOULD be prefilled with the previous prompt, or with
-  a named prompt's text when one was given as a starting template.
+- R8a.6 The prompt buffer SHOULD be prefilled with the previous prompt.
 - R8a.7 Prompt history SHOULD persist across sessions, recallable into the
   buffer with `<C-p>`/`<C-n>`.
 - R8a.8 The prompt buffer SHOULD display the resolved target scope on an
@@ -223,17 +272,23 @@ line.
 - Bedrock: `g:air_model`, `g:air_aws_cmd`, `g:air_aws_profile`,
   `g:air_aws_region`, `g:air_aws_args`, `g:air_max_tokens`,
   `g:air_temperature`, `g:air_top_p`, `g:air_inference_config`
+- OpenAI: `g:air_openai_model`, `g:air_openai_reasoning_effort`,
+  `g:air_openai_params`, `g:air_openai_base_url`, `g:air_openai_api_key_env`,
+  `g:air_curl_cmd`, `g:air_curl_args`
 - Execution: `g:air_async`, `g:air_timeout`, `g:air_max_input_bytes`,
   `g:air_cleanup_tempfiles`
 - Prompting: `g:air_prompt_ui` (`buffer` | `input`), `g:air_prompts`,
-  `g:air_default_prompt`, `g:air_ft_prompts`, `g:air_system_prompt`,
+  `g:air_ft_prompts`, `g:air_system_prompt`,
   `g:air_prompt_height`, `g:air_prompt_comment`, `g:air_prefill_last`,
   `g:air_history`, `g:air_history_file`, `g:air_history_size`
 - Review UI: `g:air_split` (`vertical` | `horizontal`), `g:air_diffopt`,
   `g:air_modifiable`, `g:air_default_scope`, `g:air_proposal_maps`
+- Diagnostics: `g:air_log_size`
 - Hooks: `g:Air_backend`, `g:Air_output_filter`
 - R9.1 All settings MUST have sane defaults. The only required configuration is
-  `g:air_model`, because no Bedrock model ID is universally valid.
+  `g:air_model` for the Bedrock backend, because no Bedrock model ID is
+  universally valid. The OpenAI backend needs only the API key in the
+  environment.
 - R9.2 MUST define no default mappings; `<Plug>` mappings MUST be provided.
 
 ## 10. Quality / distribution
@@ -243,15 +298,15 @@ line.
   stripping, and diff session setup/teardown, with a mock provider.
 - R10.3 The backend layer MUST be testable without network access: the
   dispatcher via a fake backend (R7.5) or the `g:Air_backend` hook (R7.7), and
-  the Bedrock backend via a stub `aws` executable plus direct `parse()` unit
-  tests.
+  the Bedrock and OpenAI backends via stub `aws` and `curl` executables plus
+  direct `parse()` unit tests.
 - R10.4 Installable by copying the directory into `pack/*/start` or via any
   plugin manager; no build step.
 
 ## 11. Deferred to later versions
 
-- Additional backends behind the §7.1 interface: Anthropic, OpenAI, Ollama, or
-  a local HTTP endpoint. No dispatcher change should be needed.
+- Additional backends behind the §7.1 interface: Anthropic, Ollama, or a
+  local HTTP endpoint. No dispatcher change should be needed.
 - Bedrock streaming (`converse-stream`) for progressive proposals.
 - Multi-turn refinement of a proposal ("now also fix the tense").
 - Bedrock guardrails and cross-region inference profile helpers.
@@ -296,8 +351,28 @@ constraint discovered while satisfying, the requirements above.
   error messages were reduced to "exit status 254" whenever jobs were disabled.
 - **R10.2 (tests) — harness details.** Vim's silent-ex mode (`-es`) suppresses
   `:echo`, and `writefile()` refuses `/dev/stderr` there, so results are
-  appended to `$AIR_TEST_LOG` and printed by `test/run.sh`. 175 assertions, no
-  network and no AWS calls: the Bedrock backend is exercised through a stub
-  `aws` script, and a fake backend covers the dispatcher interface.
+  appended to `$AIR_TEST_LOG` and printed by `test/run.sh`. 245 assertions, no
+  network, no AWS and no OpenAI calls: the Bedrock and OpenAI backends are
+  exercised through stub `aws` and `curl` scripts, and a fake backend covers
+  the dispatcher interface.
+- **§7.4 (OpenAI) — replaced the Codex CLI backend.** An earlier backend ran
+  `codex exec` against a ChatGPT subscription. Its agent scaffolding (tool
+  schemas, base instructions) added about 12k input tokens and a second of
+  overhead to every request, and it offered no truncation signal, so it was
+  dropped in favor of a single Responses API call.
+- **§7.4 (OpenAI) — curl behaviour verified against curl 8.22.** Header
+  expansion, the `--fail-with-body` exit status (22) with the JSON error body
+  on stdout, and the unset-variable and unresolvable-host failures were checked
+  against the live endpoint with a dummy key; tests use a stub `curl`. A
+  successful response has not yet been checked against a live key.
+- **R4.9 (window sizes) — restored after the window is gone.** `BufWipeout`
+  fires while the closing proposal window still counts, and `winrestcmd()`
+  addresses windows by number, so sizes are replayed only once the tab page is
+  back to its pre-split window count: immediately by `:AirClose`, and on the
+  next timer tick after a direct `:quit` or `:bwipeout`.
+- **R8.4 (diffopt) — items are applied one by one.** Vim rejects the whole
+  `diffopt` assignment (`E474`) if any item is unknown, and Vim 8.0 predates
+  `internal` and `algorithm:`, so each item is tried in turn and kept only if
+  accepted.
 - **Repository directory.** Still `vim-ai-diff` on disk; rename to `vim-air` to
   match the plugin name.

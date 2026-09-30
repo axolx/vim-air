@@ -13,7 +13,7 @@ function! air#backend#bedrock#cmd() abort
   return air#get('aws_cmd', 'aws')
 endfunction
 
-" R7.6 — per-call model wins, then g:air_model.
+" R7.12 — per-call model wins, then g:air_model.
 function! air#backend#bedrock#model(opts) abort
   let model = get(a:opts, 'model', '')
   return !empty(model) ? model : air#get('model', '')
@@ -62,7 +62,7 @@ function! air#backend#bedrock#inference_config() abort
   return extend(cfg, air#get('inference_config', {}))
 endfunction
 
-" R7.1 — bedrock-runtime converse: one request shape for every Bedrock model.
+" R7.9 — bedrock-runtime converse: one request shape for every Bedrock model.
 function! air#backend#bedrock#request(payload, opts) abort
   let model = air#backend#bedrock#model(a:opts)
   if empty(model)
@@ -101,7 +101,7 @@ function! air#backend#bedrock#request(payload, opts) abort
   let argv += ['--system', 'file://' . system_file]
   let argv += ['--inference-config', 'file://' . config_file]
   let argv += ['--output', 'json', '--no-cli-pager']
-  " R7.7 — forward-compatibility escape hatch.
+  " §9 g:air_aws_args — forward-compatibility escape hatch.
   let argv += air#get('aws_args', [])
 
   return {
@@ -117,7 +117,7 @@ endfunction
 "   {"output":{"message":{"role":"assistant","content":[{"text":"..."}]}},
 "    "stopReason":"end_turn","usage":{...},"metrics":{...}}
 function! air#backend#bedrock#parse(result) abort
-  " R7.9 — the AWS CLI reports auth, throttling and validation errors on
+  " R7.16 — the AWS CLI reports auth, throttling and validation errors on
   " stderr with a non-zero exit.
   if a:result.status != 0
     return {'ok': 0, 'text': '',

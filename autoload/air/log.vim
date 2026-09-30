@@ -1,4 +1,4 @@
-" vim-air — request/response log (R7.9, :AirLog)
+" vim-air — request/response log (R7.17, :AirLog)
 
 scriptencoding utf-8
 
