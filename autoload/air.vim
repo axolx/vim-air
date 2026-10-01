@@ -40,6 +40,7 @@ endfunction
 
 " A message wider than the command line wraps into a hit-enter prompt, so
 " shorten it in the middle as 'shortmess' "T" would. :AirLog keeps it whole.
+" REQ 15.4
 function! s:fit(msg) abort
   let room = (exists('v:echospace') ? v:echospace : &columns - 12) - 1
   if strdisplaywidth(a:msg) <= room || room < 10
@@ -187,6 +188,7 @@ function! air#send(request) abort
   " Messages stacked without a redraw between them (the confirm() above, then
   " this one and the response's) end in a hit-enter prompt; each redraw
   " clears the message area so only the latest line shows.
+  " REQ 15.4
   redraw
   call air#info('revising ' . req.scope . ' ('
         \ . (req.end - req.start + 1) . ' lines)…')

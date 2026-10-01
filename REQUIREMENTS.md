@@ -242,6 +242,11 @@ through `curl`, followed (§7.4).
   when it did.
 - R8.3 If the response is byte-identical to the source, MUST report "no changes
   proposed" and not open a split.
+- R8.3a If the source buffer auto-wraps text (`textwidth` > 0 and `t` in
+  `formatoptions`), each revised paragraph containing a line wider than
+  `textwidth` MUST be rewrapped with Vim's internal formatter and the source's
+  formatting options. A proposal that matches the source after rewrapping is
+  treated as no change (R8.3).
 - R8.4 `diffopt` SHOULD be extended per-session, as with `:set diffopt+=`, to
   histogram hunks with aligned changed lines and word-level highlighting
   inside them, ignoring whitespace-only changes and following `wrap`

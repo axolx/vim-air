@@ -224,6 +224,14 @@ when closed, and it is 'nomodifiable' unless |g:air_modifiable| is set. It
 inherits the source buffer's 'filetype', 'fileformat' and 'fileencoding' so
 syntax highlighting and diffing behave.
 
+Models usually return a paragraph as a single line. If your source buffer
+wraps text as you type ('textwidth' set and "t" in 'formatoptions'), each
+revised paragraph with a line wider than 'textwidth' is rewrapped with |gw|
+and your buffer's formatting options, so the proposal lines up with your
+text line by line. Lines outside the revision, and buffers that do not
+auto-wrap text, such as most code, are left as returned. A response that
+differs from your text only in where lines break counts as no change.
+
 Move between changes with |]c| and |[c|. Take a hunk with |do| in your
 buffer or |dp| in the proposal; only your source buffer needs to be
 modifiable. A hunk you skip leaves your text unchanged. Your source buffer is

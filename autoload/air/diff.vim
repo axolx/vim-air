@@ -70,6 +70,44 @@ function! s:set_diffopt(want) abort
   let &diffopt = join(accepted, ',')
 endfunction
 
+" Models return a paragraph as one line, so a hard-wrapped source would diff
+" every line against it. Rewrap each revised paragraph that has a line wider
+" than the source's 'textwidth', with the source's formatting options, as
+" typing in the source would. Only buffers that auto-wrap text ("t" in
+" 'formatoptions') are reflowed: in code a long line is deliberate. gw uses
+" the internal formatter, never 'formatexpr' or 'formatprg'.
+" REQ 3.22
+function! s:reflow(srcbuf, first, last) abort
+  let tw = getbufvar(a:srcbuf, '&textwidth')
+  if tw <= 0 || getbufvar(a:srcbuf, '&formatoptions') !~# 't'
+    return
+  endif
+  for opt in ['textwidth', 'formatoptions', 'comments', 'formatlistpat',
+        \ 'autoindent']
+    call setbufvar('%', '&' . opt, getbufvar(a:srcbuf, '&' . opt))
+  endfor
+
+  let paragraphs = []
+  let start = 0
+  for lnum in range(a:first, a:last + 1)
+    if lnum <= a:last && getline(lnum) =~# '\S'
+      let start = start ? start : lnum
+    elseif start
+      call add(paragraphs, [start, lnum - 1])
+      let start = 0
+    endif
+  endfor
+
+  " Bottom up, so rewrapping cannot shift the paragraphs still to come.
+  for [first, last] in reverse(paragraphs)
+    if !empty(filter(getline(first, last), 'strdisplaywidth(v:val) > tw'))
+      call cursor(first, 1)
+      execute 'keepjumps normal! V'
+            \ . (last > first ? (last - first) . 'j' : '') . 'gw'
+    endif
+  endfor
+endfunction
+
 " R4.3/R4.4 — the response lands in a scratch buffer beside the original.
 " REQ 3.1, REQ 3.2, REQ 3.4, REQ 3.5, REQ 3.6, REQ 3.7, REQ 3.8,
 " REQ 3.13, REQ 3.16, REQ 3.17, REQ 3.18
@@ -143,6 +181,7 @@ function! air#diff#open(req, lines) abort
 
   silent %delete _
   call setline(1, proposal_lines)
+  call s:reflow(a:req.srcbuf, a:req.start, a:req.start + len(a:lines) - 1)
 
   " R0.5 — the proposal buffer keeps the source filetype, so it is tagged with
   " a buffer variable rather than a filetype.
@@ -162,6 +201,14 @@ function! air#diff#open(req, lines) abort
     execute 'autocmd BufWipeout <buffer=' . session.proposal . '>'
           \ 'call air#diff#on_proposal_gone()'
   augroup END
+
+  " R8.3 — a response that only unwrapped the source is no change either.
+  " REQ 3.23
+  if getline(1, '$') ==# a:req.all_lines
+    call air#diff#close()
+    call air#info('no changes proposed')
+    return
+  endif
 
   " REQ 3.19
   if air#get('proposal_maps', 1)

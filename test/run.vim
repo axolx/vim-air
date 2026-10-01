@@ -431,6 +431,50 @@ let g:air_fake_reply = "same\nlines"
 call air#revise('buffer', 1, 2, 'do nothing')
 call s:eq(winnr('$'), 1, 'identical response opens no split (R8.3)')
 
+" A paragraph the model returns as one line is rewrapped to the source width.
+call s:reset()
+let s:src = s:scratch(['keep', '', 'one two three', 'four five', '', 'tail'])
+setlocal textwidth=14 formatoptions=tcq
+let g:air_fake_reply = "one two three four five six seven\n\nshort but much too long here"
+call air#revise('range', 3, 6, 'extend')
+call s:goto_proposal()
+call s:eq(getline(1, '$'), ['keep', '', 'one two three', 'four five six', 'seven', '',
+      \ 'short but much', 'too long here'],
+      \ 'revised paragraphs wrap at the source textwidth')
+call s:eq(&textwidth, 14, 'the proposal takes the source textwidth')
+
+" Only the revised region is rewrapped.
+call s:reset()
+let s:src = s:scratch(['an untouched line that is long', '', 'old'])
+setlocal textwidth=14 formatoptions=tcq
+let g:air_fake_reply = 'new'
+call air#revise('range', 3, 3, 'replace')
+call s:goto_proposal()
+call s:eq(getline(1, '$'), ['an untouched line that is long', '', 'new'],
+      \ 'lines outside the revision are not rewrapped')
+
+" Without "t" in 'formatoptions' (code), long lines are left alone.
+call s:reset()
+let s:src = s:scratch(['short'])
+setlocal textwidth=14 formatoptions=cq
+let g:air_fake_reply = 'call some_function(with, many, arguments)'
+call air#revise('buffer', 1, 1, 'call it')
+call s:goto_proposal()
+call s:eq(getline(1, '$'), ['call some_function(with, many, arguments)'],
+      \ 'a buffer that does not auto-wrap text is not reflowed')
+
+" R8.3 — a response that only unwrapped the paragraph is still no change.
+call s:reset()
+let s:src = s:scratch(['one two three', 'four five'])
+setlocal textwidth=14 formatoptions=tcq
+let s:layout = winrestcmd()
+let g:air_fake_reply = 'one two three four five'
+call air#revise('buffer', 1, 2, 'unwrap')
+call s:eq(winnr('$'), 1, 'an unwrapped-only response opens no split (R8.3)')
+call s:eq(len(air#diff#sessions()), 0, 'the discarded review leaves no session')
+call s:ok(!&diff, 'the source window leaves diff mode')
+call s:eq(winrestcmd(), s:layout, 'the discarded review restores the layout')
+
 " Partial scope splices into full-buffer context.
 call s:reset()
 call s:scratch(['keep1', 'change', 'keep2'])
