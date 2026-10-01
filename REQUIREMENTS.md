@@ -242,12 +242,14 @@ through `curl`, followed (§7.4).
   when it did.
 - R8.3 If the response is byte-identical to the source, MUST report "no changes
   proposed" and not open a split.
-- R8.4 `diffopt` SHOULD be set per-session to patience hunks with word-level
-  highlighting inside changed lines
-  (`internal,filler,algorithm:patience,inline:word`, `iwhite` optional)
-  without permanently mutating the user's global setting. Items the running
-  Vim rejects (`inline:word` needs Vim 9.1.1243+) MUST be dropped rather than
-  failing the session.
+- R8.4 `diffopt` SHOULD be extended per-session, as with `:set diffopt+=`, to
+  histogram hunks with aligned changed lines and word-level highlighting
+  inside them, ignoring whitespace-only changes and following `wrap`
+  (`algorithm:histogram,indent-heuristic,linematch:60,inline:word,iwhite,followwrap`)
+  without permanently mutating the user's global setting.
+  A `key:value` item replaces the user's value for that key; the user's other
+  items are kept. Items the running Vim rejects (`inline:word` needs Vim
+  9.1.1243+) MUST be dropped rather than failing the session.
 
 ## 8a. Prompt entry
 

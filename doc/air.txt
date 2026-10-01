@@ -229,9 +229,9 @@ buffer or |dp| in the proposal; only your source buffer needs to be
 modifiable. A hunk you skip leaves your text unchanged. Your source buffer is
 a normal buffer throughout, so |u| works as always.
 
-The proposal always opens in a vertical split beside the source window, with
-the cursor on the first change. While a proposal is open, "q" in it runs
-|:AirClose| (see |g:air_proposal_maps|).
+The proposal always opens in a vertical split beside the source window. The
+cursor stays in the source window, on the first change. While a proposal is
+open, "q" in it runs |:AirClose| (see |g:air_proposal_maps|).
 
 If the source has changed since the request was composed, including while you
 were writing the prompt, the response is discarded and you are asked to run
@@ -298,11 +298,21 @@ too; the Bedrock backend relies on the AWS CLI's own timeouts there.
 Confirm before sending more than this many bytes. Default 100000.
 
                                                             *g:air_diffopt*
-'diffopt' value for the duration of a session, restored on |:AirClose|.
-Default "internal,filler,algorithm:patience,inline:word": patience hunks,
-with the changed words highlighted inside each changed line. Items this Vim
-does not support (inline:word needs Vim 9.1.1243 or later) are dropped.
-Empty leaves 'diffopt' alone.
+Items added to your 'diffopt' for the duration of a session, as with
+":set diffopt+=", restored on |:AirClose|. An item with a value, such as
+"algorithm:histogram", replaces your setting for that key; your other items
+stay. Default:
+>
+    algorithm:histogram,indent-heuristic,linematch:60,inline:word,iwhite,
+    followwrap
+<
+(as one comma-separated value): histogram hunks, with changed lines aligned
+and the changed words highlighted inside them. Changes in the amount of
+whitespace are not shown, so a proposal that only reindents or rewraps
+spacing looks unchanged; remove "iwhite" to see them. The source window keeps
+its 'wrap' setting. Items this Vim does not support (inline:word needs Vim
+9.1.1243 or later, and older builds lack linematch) are dropped. Empty leaves
+'diffopt' alone.
 
                                                         *g:air_modifiable*
 Allow editing the proposal before merging. Default 0.
@@ -582,7 +592,6 @@ The proposal contains commentary, not just the revised text
 The diff is one enormous hunk
     Your text is probably one long line per paragraph. Vim diffs by line, so
     |do| and |dp| move whole lines; the default |g:air_diffopt| highlights the
-    changed words within them. Try one sentence per line for prose, or add
-    "iwhite" to |g:air_diffopt|.
+    changed words within them. Try one sentence per line for prose.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

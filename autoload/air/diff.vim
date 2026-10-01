@@ -49,17 +49,21 @@ function! s:restore_layout(session, ...) abort
   endtry
 endfunction
 
-" R8.4 — apply a 'diffopt' value, keeping every item this Vim accepts.
-" "inline:word" needs Vim 9.1.1243+, and Vim 8.0 predates "internal" and
-" "algorithm:", so an item the build rejects is dropped instead of failing
+" R8.4 — add items to the user's 'diffopt', like :set diffopt+=, keeping
+" every item this Vim accepts. A "key:value" item replaces the user's value
+" for that key. "inline:word" needs Vim 9.1.1243+ and older builds lack
+" "linematch:", so an item the build rejects is dropped instead of failing
 " the whole setting.
 " REQ 3.14
 function! s:set_diffopt(want) abort
-  let accepted = []
+  let accepted = split(&diffopt, ',')
   for item in split(a:want, ',')
+    let key = matchstr(item, '^[^:]*:')
+    let candidate = filter(copy(accepted), empty(key)
+          \ ? 'v:val !=# item' : 'stridx(v:val, key) != 0') + [item]
     try
-      let &diffopt = join(accepted + [item], ',')
-      call add(accepted, item)
+      let &diffopt = join(candidate, ',')
+      let accepted = candidate
     catch /^Vim\%((\a\+)\)\=:E474:/
     endtry
   endfor
@@ -108,10 +112,11 @@ function! air#diff#open(req, lines) abort
         \ 'wincount': winnr('$'),
         \ }
 
-  " R8.4 — patience hunks and word-level highlighting within changed lines,
+  " R8.4 — histogram hunks, aligned changed lines and word-level highlighting
+  " within them, ignoring whitespace-only changes and following 'wrap',
   " restored on close.
-  let want = air#get('diffopt',
-        \ 'internal,filler,algorithm:patience,inline:word')
+  let want = air#get('diffopt', 'algorithm:histogram,indent-heuristic,'
+        \ . 'linematch:60,inline:word,iwhite,followwrap')
   if !empty(want)
     call s:set_diffopt(want)
   endif
@@ -163,7 +168,9 @@ function! air#diff#open(req, lines) abort
     nnoremap <buffer> <silent> q :AirClose<CR>
   endif
 
-  " Land on the first change. ]c jumps past a change that starts on line 1.
+  " REQ 3.8 — focus the source window, where do and u apply, and land on the
+  " first change. ]c jumps past a change that starts on line 1.
+  call win_gotoid(source)
   keepjumps normal! gg
   if !diff_hlID(1, 1) && !diff_filler(1)
     silent! normal! ]c

@@ -64,6 +64,11 @@ function! s:scratch(lines) abort
   return bufnr('%')
 endfunction
 
+function! s:goto_proposal() abort
+  let session = values(air#diff#sessions())[0]
+  execute bufwinnr(session.proposal) . 'wincmd w'
+endfunction
+
 function! s:reset() abort
   call air#diff#close()
   silent! only!
@@ -304,6 +309,9 @@ call s:ok(winwidth(0) < &columns, 'review stays vertical with the removed split 
 
 call s:eq(len(g:air_fake_prompts), 1, 'backend called once')
 call s:eq(winnr('$'), 2, 'diff split opened (R4.4)')
+call s:eq(bufnr('%'), s:src, 'focus stays in the source window (REQ 3.8)')
+call s:eq(line('.'), 1, 'cursor lands on the first change (REQ 3.8)')
+call s:goto_proposal()
 call s:ok(exists('b:air_proposal'), 'proposal buffer is tagged (R0.5)')
 call s:eq(getline(1, '$'), ['ALPHA', 'beta', 'gamma'],
       \ 'proposal holds the full buffer with the revision spliced in')
@@ -311,9 +319,13 @@ call s:ok(&diff, 'proposal window is in diff mode')
 call s:ok(!&modifiable, 'proposal is nomodifiable by default (R4.6)')
 call s:eq(&buftype, 'nofile', 'proposal is a scratch buffer')
 call s:ok(getwinvar(bufwinnr(s:src), '&diff'), 'source window is in diff mode')
-call s:ok(&diffopt =~# 'patience', 'diffopt augmented for the session (R8.4)')
-call s:ok(&diffopt =~# 'inline:word',
-      \ 'word-level highlighting is enabled for the session (R8.4)')
+call s:ok(&diffopt =~# 'algorithm:histogram',
+      \ 'diffopt augmented for the session (R8.4)')
+call s:ok(&diffopt =~# 'linematch:60', 'changed lines are aligned (R8.4)')
+call s:ok(&diffopt =~# 'iwhite' && &diffopt =~# 'followwrap',
+      \ 'whitespace changes are ignored and wrap is followed (R8.4)')
+call s:ok(&diffopt =~# 'inline:word' && &diffopt !~# 'inline:char',
+      \ 'word-level highlighting replaces the user inline setting (R8.4)')
 
 " Native merge commands still drive everything (R4.7).
 let s:pwin = winnr()
@@ -333,21 +345,25 @@ call s:eq(len(air#diff#sessions()), 0, 'session state cleared')
 " R8.4 — a diffopt item this Vim rejects is dropped, not fatal.
 call s:reset()
 call s:scratch(['one', 'two'])
-let g:air_diffopt = 'internal,no-such-item:1,algorithm:patience'
+set diffopt=internal,filler,iwhite
+let s:user_diffopt = &diffopt
+let g:air_diffopt = 'no-such-item:1,filler,algorithm:patience'
 let g:air_fake_reply = "ONE\ntwo"
 call air#revise('buffer', 1, 2, 'shout')
 call s:eq(winnr('$'), 2, 'an unsupported diffopt item does not stop the session')
-call s:eq(&diffopt, 'internal,algorithm:patience',
-      \ 'supported diffopt items are kept, the unsupported one dropped')
+call s:eq(&diffopt, 'internal,iwhite,filler,algorithm:patience',
+      \ 'session items are added to the user diffopt, the unsupported one dropped')
 unlet g:air_diffopt
 call air#diff#close()
-call s:eq(&diffopt, s:orig_diffopt, 'diffopt is still restored afterwards')
+call s:eq(&diffopt, s:user_diffopt, 'diffopt is still restored afterwards')
+let &diffopt = s:orig_diffopt
 
 " REQ 3.7 — dp from a nomodifiable proposal still sends a hunk to the source.
 call s:reset()
 let s:src = s:scratch(['alpha', 'beta'])
 let g:air_fake_reply = "ALPHA\nbeta"
 call air#revise('buffer', 1, 2, 'shout')
+call s:goto_proposal()
 call s:ok(!&modifiable, 'proposal is nomodifiable for the dp check')
 silent! normal! dp
 call s:eq(getbufline(s:src, 1, '$'), ['ALPHA', 'beta'],
@@ -361,6 +377,7 @@ let g:air_modifiable = 1
 let g:air_proposal_maps = 0
 let g:air_fake_reply = "ALPHA\nbeta"
 call air#revise('buffer', 1, 2, 'shout')
+call s:goto_proposal()
 call s:ok(&modifiable, 'g:air_modifiable leaves the proposal modifiable')
 call s:ok(empty(maparg('q', 'n')), 'g:air_proposal_maps = 0 skips the q map')
 call air#diff#close()
@@ -419,6 +436,8 @@ call s:reset()
 call s:scratch(['keep1', 'change', 'keep2'])
 let g:air_fake_reply = 'CHANGED'
 call air#revise('range', 2, 2, 'shout it')
+call s:eq(line('.'), 2, 'cursor lands on a first change below line 1 (REQ 3.8)')
+call s:goto_proposal()
 call s:eq(getline(1, '$'), ['keep1', 'CHANGED', 'keep2'],
       \ 'partial revision spliced into full buffer (R5.2)')
 call air#diff#close()
@@ -438,7 +457,7 @@ vertical resize 55
 let s:first_layout = winrestcmd()
 let g:air_fake_reply = "FIRST\nbuffer"
 call air#revise('buffer', 1, 2, 'shout')
-let s:first_proposal = bufnr('%')
+let s:first_proposal = air#diff#sessions()[s:first_src].proposal
 tabnew
 let s:second_src = bufnr('%')
 call setline(1, ['second', 'buffer'])
@@ -453,7 +472,8 @@ call s:ok(!&diff && &wrap && &foldmethod ==# 'manual' && &foldcolumn == 2
       \ && !&scrollbind && !&cursorbind, 'replacement restores the old source options')
 call s:eq(winrestcmd(), s:first_layout, 'replacement restores the old tab layout')
 call win_gotoid(s:second_win)
-call s:eq(&diffopt, 'internal,filler,algorithm:patience,inline:word',
+call s:ok(&diffopt =~# 'algorithm:histogram,indent-heuristic,linematch:60,'
+      \ . 'inline:word,iwhite,followwrap$',
       \ 'replacement retains the review diff options')
 call air#diff#close()
 call s:eq(&diffopt, s:orig_diffopt, 'replacement restores the original global diffopt')
@@ -470,7 +490,7 @@ vertical resize 50
 let s:layout = winrestcmd()
 let g:air_fake_reply = "ALPHA\nbeta"
 call air#revise('buffer', 1, 2, 'shout')
-let s:proposal = bufnr('%')
+let s:proposal = air#diff#sessions()[s:src].proposal
 tabnew
 let s:other_win = win_getid()
 execute 'bwipeout!' s:proposal
@@ -562,7 +582,7 @@ call air#prompt#submit()
 call s:eq(len(g:air_fake_prompts), 1, 'prompt buffer submission reaches backend')
 call s:ok(g:air_fake_prompts[0] =~# '# shout\nthe first line',
       \ 'every line of the prompt buffer is sent, "#" lines included')
-call s:ok(exists('b:air_proposal'), 'submission opens the diff split')
+call s:ok(!empty(air#diff#sessions()), 'submission opens the diff split')
 call air#diff#close()
 
 " ==================================================== backend: dispatcher ====
