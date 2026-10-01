@@ -38,17 +38,30 @@ function! air#error(msg) abort
   echohl None
 endfunction
 
+" A message wider than the command line wraps into a hit-enter prompt, so
+" shorten it in the middle as 'shortmess' "T" would. :AirLog keeps it whole.
+function! s:fit(msg) abort
+  let room = (exists('v:echospace') ? v:echospace : &columns - 12) - 1
+  if strdisplaywidth(a:msg) <= room || room < 10
+    return a:msg
+  endif
+  let chars = split(a:msg, '\zs')
+  let half = (room - 3) / 2
+  return join(chars[: half - 1], '') . '...'
+        \ . join(chars[len(chars) - (room - 3 - half) :], '')
+endfunction
+
 function! air#warn(msg) abort
   call air#log#add('WARN: ' . a:msg)
   echohl WarningMsg
-  echomsg 'air: ' . a:msg
+  echomsg s:fit('air: ' . a:msg)
   echohl None
 endfunction
 
 function! air#info(msg) abort
   call air#log#add('info: ' . a:msg)
   echohl None
-  echomsg 'air: ' . a:msg
+  echomsg s:fit('air: ' . a:msg)
 endfunction
 
 " ------------------------------------------------------------ arg parsing ----
@@ -171,6 +184,10 @@ function! air#send(request) abort
         \ . ' lines ' . req.start . '-' . req.end . ") ---\n"
         \ . payload.system . "\n\n" . payload.user)
 
+  " Messages stacked without a redraw between them (the confirm() above, then
+  " this one and the response's) end in a hit-enter prompt; each redraw
+  " clears the message area so only the latest line shows.
+  redraw
   call air#info('revising ' . req.scope . ' ('
         \ . (req.end - req.start + 1) . ' lines)…')
 
@@ -184,6 +201,7 @@ endfunction
 function! s:on_response(req, result) abort
   call air#log#add('--- response (ok=' . a:result.ok . ") ---\n"
         \ . get(a:result, 'raw', ''))
+  redraw
 
   if !a:result.ok
     call air#error(a:result.error . ' (see :AirLog)')
@@ -199,6 +217,13 @@ function! s:on_response(req, result) abort
   endif
 
   call air#diff#open(a:req, lines)
+
+  " REQ 11.12, REQ 12.17 — a truncation warning outranks "proposal ready".
+  let warning = get(a:result, 'warning', '')
+  if !empty(warning)
+    redraw
+    call air#warn(warning)
+  endif
 endfunction
 
 function! air#abort() abort

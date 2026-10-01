@@ -1118,6 +1118,17 @@ let g:Air_backend = s:saved_backend
 
 call s:ok(!air#backend#abort(), 'abort with no job in flight is a no-op')
 
+" Status lines must fit the command line, or they end in a hit-enter prompt.
+let s:long = 'start ' . repeat('x', 3 * &columns) . ' end'
+call air#warn(s:long)
+let s:shown = split(execute('messages'), "\n")[-1]
+call s:ok(strdisplaywidth(s:shown) < &columns,
+      \ 'a long warning is shortened to fit the command line')
+call s:ok(s:shown =~# '^air: start x\+\.\.\.x\+ end$',
+      \ 'a shortened message keeps its start and end')
+call s:ok(air#log#entries()[-1] =~# 'WARN: ' . s:long . '$',
+      \ ':AirLog keeps the full message')
+
 " ------------------------------------------------------------------ hooks ----
 
 call s:say('--- hooks ---')

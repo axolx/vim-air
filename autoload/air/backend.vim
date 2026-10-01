@@ -336,10 +336,6 @@ function! s:finish(backend, request, Cb, status, out, err) abort
     let text = call(Filter, [text])
   endif
 
-  if !empty(parsed.warning)
-    call air#warn(parsed.warning)
-  endif
-
   return call(a:Cb, [{'ok': 1, 'text': text, 'raw': raw, 'error': '',
         \ 'warning': parsed.warning}])
 endfunction
